@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ImagePlus, Loader2, Plus, Trash2 } from "lucide-react";
+import { ImagePlus, Loader2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
 import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
@@ -28,6 +28,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   deleteFirebaseMenuChild as deleteMenuChild,
   deleteFirebaseCategory as deleteCategory,
@@ -36,10 +37,17 @@ import {
   saveFirebaseAddon as saveAddon,
   saveFirebaseCategory as saveCategory,
   saveFirebaseMenuItem as saveMenuItem,
+  saveFirebaseModifier as saveModifier,
   saveFirebaseVariant as saveVariant,
   subscribeFirebaseMenu,
   toggleFirebaseMenuItem as toggleMenuItem,
+  addonsForMenuItem,
+  modifiersForMenuItem,
+  variantsForMenuItem,
+  type MenuItem,
+  type MenuModifier,
   type MenuPayload,
+  type ModifierChoiceConfig,
 } from "@/lib/menus.firebase";
 import { isFirebaseAvailable } from "@/lib/firebase";
 
@@ -93,6 +101,57 @@ const PRODUCT_PHOTO_IDS = [
 function randomProductImage(): string {
   const id = PRODUCT_PHOTO_IDS[Math.floor(Math.random() * PRODUCT_PHOTO_IDS.length)]!;
   return `https://images.unsplash.com/${id}?auto=format&fit=crop&w=700&q=70&sig=${Math.floor(Math.random() * 10000)}`;
+}
+
+function productCustomizationCounts(
+  itemId: string,
+  variants: MenuPayload["variants"],
+  addons: MenuPayload["addons"],
+  item: MenuItem,
+  modifiers: MenuModifier[],
+) {
+  const v = variantsForMenuItem(variants, itemId).length;
+  const a = addonsForMenuItem(addons, itemId).length;
+  const m = modifiersForMenuItem(modifiers, item).length;
+  return { v, a, m };
+}
+
+function toggleProductModifierChoice(
+  item: MenuItem,
+  modifier: MenuModifier,
+  choiceIdx: number,
+): { modifier_ids: string[]; modifier_config: MenuItem["modifier_config"] } {
+  const config = { ...item.modifier_config };
+  const modConfig = { ...(config[modifier.id] ?? {}) };
+  const current = modConfig[String(choiceIdx)];
+  if (current?.selected) {
+    modConfig[String(choiceIdx)] = { selected: false, price: 0 };
+  } else {
+    const originalPrice = modifier.choices[choiceIdx]?.price ?? 0;
+    modConfig[String(choiceIdx)] = { selected: true, price: originalPrice };
+  }
+  config[modifier.id] = modConfig;
+  const modifier_ids = Object.keys(config).filter((mid) =>
+    Object.values(config[mid] ?? {}).some((c) => c.selected),
+  );
+  return { modifier_ids, modifier_config: config };
+}
+
+function updateProductModifierChoicePrice(
+  item: MenuItem,
+  modifierId: string,
+  choiceIdx: number,
+  price: number,
+): MenuItem["modifier_config"] {
+  const config = { ...item.modifier_config };
+  const modConfig = { ...(config[modifierId] ?? {}) };
+  modConfig[String(choiceIdx)] = {
+    ...(modConfig[String(choiceIdx)] ?? { selected: true }),
+    selected: true,
+    price,
+  };
+  config[modifierId] = modConfig;
+  return config;
 }
 
 function MenusPage() {
@@ -167,11 +226,11 @@ function MenusPage() {
     queryKey: menuKey,
     queryFn: async () => {
       if (!selectedRestaurant || !isFirebaseAvailable())
-        return { categories: [], items: [], variants: [], addons: [] };
+        return { categories: [], items: [], variants: [], addons: [], modifiers: [] };
       return getFirebaseMenu(selectedRestaurant);
     },
     enabled: Boolean(selectedRestaurant),
-    initialData: { categories: [], items: [], variants: [], addons: [] },
+    initialData: { categories: [], items: [], variants: [], addons: [], modifiers: [] },
   });
 
   useEffect(() => {
@@ -227,8 +286,13 @@ function MenusPage() {
     onSuccess: notify("Add-on saved"),
     onError: fail,
   });
+  const modifierMutation = useMutation({
+    mutationFn: (_p: Parameters<typeof saveModifier>[0]) => saveModifier(_p),
+    onSuccess: notify("Modifier group saved"),
+    onError: fail,
+  });
   const childDelete = useMutation({
-    mutationFn: (p: { restaurant_id: string; id: string; kind: "variant" | "addon" }) =>
+    mutationFn: (p: { restaurant_id: string; id: string; kind: "variant" | "addon" | "modifier" }) =>
       deleteMenuChild(p),
     onSuccess: notify("Removed"),
     onError: fail,
@@ -307,7 +371,7 @@ function MenusPage() {
         }
         if (menuQuery.isLoading || !menuQuery.data || !selectedRestaurant)
           return <Skeleton className="h-96 w-full" />;
-        const { categories, items, variants, addons } = menuQuery.data;
+        const { categories, items, variants, addons, modifiers } = menuQuery.data;
 
         // Build logical category → items groups so the products section mirrors
         // how a customer menu looks (category order from sort_order, uncategorised
@@ -393,6 +457,113 @@ function MenusPage() {
                     <p className="text-sm text-muted-foreground">
                       No categories yet — add one to get started.
                     </p>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="h-fit">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <SlidersHorizontal className="size-4" /> Modifier groups
+                  </CardTitle>
+                  <CardDescription>
+                    Choice groups (e.g. spice level, size) — assign to products below.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {modifiers.map((modifier) => (
+                    <div
+                      key={modifier.id}
+                      className="rounded-md border border-border px-3 py-2 text-sm"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-medium">{modifier.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {modifier.type} · {modifier.choices.length} choices ·{" "}
+                            {modifier.min_selections}–{modifier.max_selections} picks
+                          </p>
+                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                            {modifier.choices.map((c) => c.label).join(", ")}
+                          </p>
+                        </div>
+                        {canManage && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() =>
+                              childDelete.mutate({
+                                restaurant_id: restaurantId,
+                                id: modifier.id,
+                                kind: "modifier",
+                              })
+                            }
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {modifiers.length === 0 && (
+                    <p className="text-sm text-muted-foreground">No modifier groups yet.</p>
+                  )}
+                  {canManage && (
+                    <form
+                      className="space-y-2 rounded-md border border-dashed border-border p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const form = new FormData(event.currentTarget);
+                        const type = String(form.get("type")) === "extra" ? "extra" : "option";
+                        const includePricing = form.get("include_pricing") === "on";
+                        const choiceLabels = String(form.get("choices") ?? "")
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        if (choiceLabels.length === 0) {
+                          toast.error("Enter at least one choice (comma-separated).");
+                          return;
+                        }
+                        modifierMutation.mutate({
+                          restaurant_id: restaurantId,
+                          name: String(form.get("name")),
+                          type,
+                          include_pricing: includePricing,
+                          required: type === "option",
+                          min_selections: type === "option" ? 1 : 0,
+                          max_selections: type === "option" ? 1 : 3,
+                          choices: choiceLabels.map((label) => ({ label, price: 0 })),
+                        });
+                        event.currentTarget.reset();
+                      }}
+                    >
+                      <Input name="name" placeholder="Group name (e.g. Spice level)" required className="h-9" />
+                      <select
+                        name="type"
+                        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        defaultValue="option"
+                      >
+                        <option value="option">Option (required, single)</option>
+                        <option value="extra">Extra (optional, multi)</option>
+                      </select>
+                      <Input
+                        name="choices"
+                        placeholder="Choices: Mild, Medium, Hot"
+                        required
+                        className="h-9"
+                      />
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Checkbox name="include_pricing" /> Include pricing per choice
+                      </label>
+                      <Button type="submit" size="sm" disabled={modifierMutation.isPending} className="w-full">
+                        {modifierMutation.isPending ? (
+                          <Loader2 className="mr-2 size-4 animate-spin" />
+                        ) : (
+                          <Plus className="mr-2 size-4" />
+                        )}
+                        Add modifier group
+                      </Button>
+                    </form>
                   )}
                 </CardContent>
               </Card>
@@ -554,7 +725,18 @@ function MenusPage() {
                   </CardHeader>
                   <CardContent>
                     <Accordion type="single" collapsible className="w-full">
-                      {items.map((item) => (
+                      {items.map((item) => {
+                        const itemVariants = variantsForMenuItem(variants, item.id);
+                        const itemAddons = addonsForMenuItem(addons, item.id);
+                        const itemModifiers = modifiersForMenuItem(modifiers, item);
+                        const counts = productCustomizationCounts(
+                          item.id,
+                          variants,
+                          addons,
+                          item,
+                          modifiers,
+                        );
+                        return (
                         <AccordionItem key={item.id} value={item.id}>
                           <AccordionTrigger>
                             <div className="flex flex-1 items-center gap-3 pr-3 text-left">
@@ -577,6 +759,11 @@ function MenusPage() {
                                     {item.description}
                                   </p>
                                 ) : null}
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                  {counts.v} variant{counts.v === 1 ? "" : "s"} · {counts.a} add-on
+                                  {counts.a === 1 ? "" : "s"} · {counts.m} modifier
+                                  {counts.m === 1 ? "" : "s"} · {item.prep_time_minutes} min prep
+                                </p>
                               </div>
                               <div className="ml-auto flex shrink-0 items-center gap-2">
                                 {item.discount_price != null && item.discount_price > 0 ? (
@@ -598,6 +785,31 @@ function MenusPage() {
                             </div>
                           </AccordionTrigger>
                           <AccordionContent className="space-y-4">
+                            <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                              <p>
+                                <span className="font-medium text-foreground">Category:</span>{" "}
+                                {item.category}
+                              </p>
+                              {item.description ? (
+                                <p className="mt-1">
+                                  <span className="font-medium text-foreground">Description:</span>{" "}
+                                  {item.description}
+                                </p>
+                              ) : null}
+                              <p className="mt-1">
+                                <span className="font-medium text-foreground">Prep time:</span>{" "}
+                                {item.prep_time_minutes} min ·{" "}
+                                <span className="font-medium text-foreground">Points:</span>{" "}
+                                {item.points_value ?? 5} ·{" "}
+                                <span className="font-medium text-foreground">ID:</span> {item.id}
+                              </p>
+                              {item.allergens.length > 0 ? (
+                                <p className="mt-1">
+                                  <span className="font-medium text-foreground">Allergens:</span>{" "}
+                                  {item.allergens.join(", ")}
+                                </p>
+                              ) : null}
+                            </div>
                             <div className="flex flex-wrap items-center gap-4">
                               <div className="flex items-center gap-2">
                                 <Label className="text-xs">Available</Label>
@@ -720,17 +932,29 @@ function MenusPage() {
                               </form>
                             )}
 
-                            <div className="grid gap-4 md:grid-cols-2">
+                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                               <div className="space-y-2">
-                                <p className="text-sm font-medium">Variants</p>
-                                {variants
-                                  .filter((v) => v.menu_item_id === item.id)
+                                <p className="text-sm font-medium">
+                                  Variants{" "}
+                                  <span className="font-normal text-muted-foreground">
+                                    ({itemVariants.length})
+                                  </span>
+                                </p>
+                                {itemVariants.length === 0 && (
+                                  <p className="text-xs text-muted-foreground">No variants linked.</p>
+                                )}
+                                {itemVariants
                                   .map((variant) => (
                                     <div
                                       key={variant.id}
                                       className="flex items-center justify-between rounded border border-border px-3 py-1.5 text-sm"
                                     >
-                                      <span>{variant.name}</span>
+                                      <span>
+                                        {variant.name}
+                                        {variant.is_default ? (
+                                          <span className="ml-1 text-[10px] text-primary">default</span>
+                                        ) : null}
+                                      </span>
                                       <span className="flex items-center gap-2 tabular-nums">
                                         +R {Number(variant.price_delta).toFixed(2)}
                                         {canManage && (
@@ -787,15 +1011,26 @@ function MenusPage() {
                               </div>
 
                               <div className="space-y-2">
-                                <p className="text-sm font-medium">Add-ons</p>
-                                {addons
-                                  .filter((a) => a.menu_item_id === item.id)
-                                  .map((addon) => (
+                                <p className="text-sm font-medium">
+                                  Add-ons{" "}
+                                  <span className="font-normal text-muted-foreground">
+                                    ({itemAddons.length})
+                                  </span>
+                                </p>
+                                {itemAddons.length === 0 && (
+                                  <p className="text-xs text-muted-foreground">No add-ons linked.</p>
+                                )}
+                                {itemAddons.map((addon) => (
                                     <div
                                       key={addon.id}
                                       className="flex items-center justify-between rounded border border-border px-3 py-1.5 text-sm"
                                     >
-                                      <span>{addon.name}</span>
+                                      <span>
+                                        {addon.name}
+                                        <span className="ml-1 text-[10px] text-muted-foreground">
+                                          max {addon.max_quantity}
+                                        </span>
+                                      </span>
                                       <span className="flex items-center gap-2 tabular-nums">
                                         R {Number(addon.price).toFixed(2)}
                                         {canManage && (
@@ -850,10 +1085,102 @@ function MenusPage() {
                                   </form>
                                 )}
                               </div>
+
+                              <div className="space-y-2 md:col-span-2 xl:col-span-1">
+                                <p className="text-sm font-medium">
+                                  Modifier groups{" "}
+                                  <span className="font-normal text-muted-foreground">
+                                    ({itemModifiers.length} assigned)
+                                  </span>
+                                </p>
+                                {modifiers.length === 0 && (
+                                  <p className="text-xs text-muted-foreground">
+                                    Create modifier groups in the left column first.
+                                  </p>
+                                )}
+                                {modifiers.map((modifier) => {
+                                  const assigned = item.modifier_ids.includes(modifier.id);
+                                  const modConfig = item.modifier_config[modifier.id] ?? {};
+                                  return (
+                                    <div
+                                      key={modifier.id}
+                                      className="rounded border border-border px-3 py-2 text-sm"
+                                    >
+                                      <p className="font-medium">{modifier.name}</p>
+                                      <p className="text-[10px] text-muted-foreground">
+                                        {modifier.type} · {modifier.choices.length} choices
+                                      </p>
+                                      <div className="mt-2 space-y-1">
+                                        {modifier.choices.map((choice, idx) => {
+                                          const cfg = modConfig[String(idx)] as
+                                            | ModifierChoiceConfig
+                                            | undefined;
+                                          const selected = cfg?.selected === true;
+                                          return (
+                                            <div
+                                              key={idx}
+                                              className="flex items-center gap-2 text-xs"
+                                            >
+                                              {canManage ? (
+                                                <Checkbox
+                                                  checked={selected}
+                                                  onCheckedChange={() => {
+                                                    const next = toggleProductModifierChoice(
+                                                      item,
+                                                      modifier,
+                                                      idx,
+                                                    );
+                                                    itemMutation.mutate({
+                                                      ...item,
+                                                      ...next,
+                                                    });
+                                                  }}
+                                                />
+                                              ) : (
+                                                <span>{selected ? "✓" : "○"}</span>
+                                              )}
+                                              <span className="flex-1">{choice.label}</span>
+                                              {modifier.include_pricing && canManage && selected ? (
+                                                <Input
+                                                  type="number"
+                                                  step="0.01"
+                                                  className="h-7 w-20"
+                                                  defaultValue={cfg?.price ?? choice.price}
+                                                  onBlur={(e) => {
+                                                    itemMutation.mutate({
+                                                      ...item,
+                                                      modifier_config: updateProductModifierChoicePrice(
+                                                        item,
+                                                        modifier.id,
+                                                        idx,
+                                                        Number(e.target.value) || 0,
+                                                      ),
+                                                    });
+                                                  }}
+                                                />
+                                              ) : modifier.include_pricing && selected ? (
+                                                <span className="tabular-nums">
+                                                  +R {(cfg?.price ?? choice.price).toFixed(2)}
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                      {!assigned && canManage && (
+                                        <p className="mt-1 text-[10px] text-muted-foreground">
+                                          Select choices above to assign this group.
+                                        </p>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
                           </AccordionContent>
                         </AccordionItem>
-                      ))}
+                        );
+                      })}
                     </Accordion>
                     {items.length === 0 && (
                       <p className="py-10 text-center text-sm text-muted-foreground">
