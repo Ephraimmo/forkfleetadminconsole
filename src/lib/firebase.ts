@@ -50,6 +50,30 @@ export async function rtdbSet<T extends RTDBValue>(path: string, value: T): Prom
   await set(ref(db, path), value);
 }
 
+/** Writes through a named Firebase app (e.g. provisioner) so RTDB rules see that app's auth. */
+export async function rtdbSetWithApp<T extends RTDBValue>(
+  appName: string,
+  path: string,
+  value: T,
+): Promise<void> {
+  if (!isBrowser) throw new Error("Firebase is only available in the browser.");
+  const { getApps, initializeApp } = await import("firebase/app");
+  const { getDatabase, ref, set } = await import("firebase/database");
+  const existing = getApps().find((app) => app.name === appName);
+  const app = existing ?? initializeApp(FIREBASE_CONFIG, appName);
+  await set(ref(getDatabase(app), path), value);
+}
+
+export async function rtdbGetWithApp<T = unknown>(appName: string, path: string): Promise<T | null> {
+  if (!isBrowser) throw new Error("Firebase is only available in the browser.");
+  const { getApps, initializeApp } = await import("firebase/app");
+  const { getDatabase, ref, get } = await import("firebase/database");
+  const existing = getApps().find((app) => app.name === appName);
+  const app = existing ?? initializeApp(FIREBASE_CONFIG, appName);
+  const snap = await get(ref(getDatabase(app), path));
+  return (snap.val() as T) ?? null;
+}
+
 export async function rtdbUpdate(path: string, value: Record<string, RTDBValue>): Promise<void> {
   const db = await getDb();
   const { ref, update } = await import("firebase/database");

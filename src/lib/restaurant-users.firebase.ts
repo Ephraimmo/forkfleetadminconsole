@@ -13,8 +13,9 @@ import {
   FIREBASE_CONFIG,
   isFirebaseAvailable,
   rtdbGet,
+  rtdbGetWithApp,
   rtdbPush,
-  rtdbSet,
+  rtdbSetWithApp,
   rtdbSubscribe,
   rtdbUpdate,
 } from "@/lib/firebase";
@@ -91,7 +92,7 @@ function friendlyAuthError(err: unknown): string {
   const code = (err as { code?: string } | null | undefined)?.code ?? "";
   switch (code) {
     case "auth/email-already-in-use":
-      return "That email is already registered. Edit the existing account or reset its password.";
+      return "That email is already registered. If a previous attempt failed part-way, try the same email and password again — the system will complete the profile.";
     case "auth/invalid-email":
       return "That email address doesn't look valid.";
     case "auth/weak-password":
@@ -107,6 +108,25 @@ function friendlyAuthError(err: unknown): string {
     default:
       return err instanceof Error && err.message ? err.message : "Unexpected Firebase error.";
   }
+}
+
+function friendlyRtdbError(err: unknown): string {
+  const code = (err as { code?: string } | null | undefined)?.code ?? "";
+  if (code === "PERMISSION_DENIED") {
+    return "Database permission denied. Deploy the updated database.rules.json from this project, or ensure Realtime Database rules allow provisioning.";
+  }
+  return err instanceof Error && err.message ? err.message : "Failed to save user profile.";
+}
+
+async function writeRestaurantUserProfile(
+  uid: string,
+  record: RestaurantUserRecord,
+): Promise<void> {
+  await rtdbSetWithApp(
+    PROVISIONER_APP_NAME,
+    `${RESTAURANT_USERS_PATH}/${uid}`,
+    toRawRestaurantUser(record),
+  );
 }
 
 async function getMainApp(): Promise<FirebaseApp> {
@@ -245,11 +265,36 @@ export async function createRestaurantUser(
 
   let auth: FirebaseAuth | null = null;
   try {
-    const { createUserWithEmailAndPassword, signOut } = await import("firebase/auth");
+    const { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } =
+      await import("firebase/auth");
     auth = await getProvisionerAuth();
-    const credential = await createUserWithEmailAndPassword(auth, email, input.password);
+
+    let uid: string;
+    try {
+      const credential = await createUserWithEmailAndPassword(auth, email, input.password);
+      uid = credential.user.uid;
+    } catch (err) {
+      const code = (err as { code?: string } | null | undefined)?.code ?? "";
+      if (code !== "auth/email-already-in-use") {
+        return { ok: false, error: friendlyAuthError(err) };
+      }
+      // Recover orphaned Auth accounts where profile write failed on a prior attempt.
+      const recovered = await signInWithEmailAndPassword(auth, email, input.password);
+      uid = recovered.user.uid;
+      const existing = normalizeRestaurantUser(
+        await rtdbGetWithApp<RestaurantUserRaw>(PROVISIONER_APP_NAME, `${RESTAURANT_USERS_PATH}/${uid}`),
+        uid,
+      );
+      if (existing) {
+        return {
+          ok: false,
+          error: "That email already has Restaurant Management access. Edit the existing user instead.",
+        };
+      }
+    }
+
     const record: RestaurantUserRecord = {
-      uid: credential.user.uid,
+      uid,
       email,
       full_name: input.fullName.trim(),
       job_title: input.jobTitle?.trim() ? input.jobTitle.trim() : null,
@@ -262,7 +307,13 @@ export async function createRestaurantUser(
       created_by: input.actorEmail,
       last_login_at: null,
     };
-    await rtdbSet(`${RESTAURANT_USERS_PATH}/${record.uid}`, toRawRestaurantUser(record));
+
+    try {
+      await writeRestaurantUserProfile(uid, record);
+    } catch (err) {
+      return { ok: false, error: friendlyRtdbError(err) };
+    }
+
     await writeRestaurantUserAudit({
       action: "restaurant_user.created",
       actor_email: input.actorEmail,

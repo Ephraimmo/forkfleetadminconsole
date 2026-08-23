@@ -14,8 +14,8 @@
     "restaurantUsers": {
       "$uid": {
         ".read": "auth != null && (auth.uid == $uid || root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
-        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
-        ".validate": "newData.hasChildren(['uid', 'email', 'restaurant_id', 'role', 'permissions', 'status']) && newData.child('restaurant_id').isString() && newData.child('restaurant_id').val().length > 0 && newData.child('status').val().matches(/^(active|suspended)$/)"
+        ".write": "auth != null && ((!data.exists() && auth.uid == $uid && newData.child('uid').val() == auth.uid) || root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+        ".validate": "newData.hasChildren(['uid', 'email', 'restaurant_id', 'role', 'permissions', 'status']) && newData.child('uid').val() == $uid && newData.child('restaurant_id').isString() && newData.child('restaurant_id').val().length > 0 && newData.child('status').val().matches(/^(active|suspended)$/)"
       }
     },
 

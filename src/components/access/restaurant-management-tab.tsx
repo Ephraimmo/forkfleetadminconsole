@@ -6,7 +6,9 @@ import { formatDistanceToNow } from "date-fns";
 import {
   Ban,
   BadgeCheck,
+  ChevronDown,
   Copy,
+  Crown,
   Eye,
   EyeOff,
   KeyRound,
@@ -20,8 +22,11 @@ import {
   Trash2,
   UserPlus,
   Users,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,6 +42,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -77,7 +87,6 @@ import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
 import {
   getDefaultPermissionsForRole,
   RESTAURANT_PERMISSIONS,
-  RESTAURANT_ROLES,
   restaurantRoleLabel,
   type RestaurantRole,
 } from "@/lib/restaurant-permissions";
@@ -95,11 +104,30 @@ import {
   type RestaurantUserRecord,
 } from "@/lib/restaurant-users.firebase";
 
-const ROLE_CATALOG = RESTAURANT_ROLES.map((role) => ({
-  role,
-  label: restaurantRoleLabel(role),
-  blurb: `${getDefaultPermissionsForRole(role).length} default permissions`,
-}));
+const ROLE_CATALOG: { role: RestaurantRole; label: string; blurb: string }[] = [
+  { role: "restaurant_owner", label: "Restaurant Owner", blurb: "Full access to all restaurant modules" },
+  { role: "restaurant_manager", label: "Restaurant Manager", blurb: "Day-to-day operations and staff oversight" },
+  { role: "branch_manager", label: "Branch Manager", blurb: "Manages a single branch location" },
+  { role: "kitchen_manager", label: "Kitchen Manager", blurb: "Kitchen queue, menu and inventory" },
+  { role: "kitchen_staff", label: "Kitchen Staff", blurb: "Order preparation only" },
+  { role: "cashier", label: "Cashier", blurb: "Counter orders, tables and customers" },
+  { role: "inventory_manager", label: "Inventory Manager", blurb: "Stock levels and purchasing" },
+];
+
+const AVATAR_COLORS = [
+  "bg-sky-500/15 text-sky-400",
+  "bg-emerald-500/15 text-emerald-400",
+  "bg-amber-500/15 text-amber-400",
+  "bg-violet-500/15 text-violet-400",
+  "bg-rose-500/15 text-rose-400",
+  "bg-cyan-500/15 text-cyan-400",
+];
+
+function avatarColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length]!;
+}
 
 const addUserSchema = z.object({
   fullName: z.string().trim().min(2, "Enter the user's full name").max(80),
@@ -151,8 +179,19 @@ function PermissionPicker({
     return map;
   }, []);
 
+  const defaults = getDefaultPermissionsForRole(role);
+
   function applyRoleDefaults() {
-    onChange(getDefaultPermissionsForRole(role));
+    onChange(defaults);
+  }
+
+  function toggleModule(modulePerms: typeof RESTAURANT_PERMISSIONS, checked: boolean) {
+    const codes = modulePerms.map((p) => p.code);
+    if (checked) {
+      onChange([...new Set([...permissions, ...codes])]);
+    } else {
+      onChange(permissions.filter((code) => !codes.includes(code)));
+    }
   }
 
   function toggle(code: string, checked: boolean) {
@@ -160,38 +199,65 @@ function PermissionPicker({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <Label>Module permissions</Label>
-        <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={applyRoleDefaults}>
-          Reset to role defaults
+    <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <Label className="text-sm font-semibold">Module access</Label>
+          <p className="text-xs text-muted-foreground">
+            {permissions.length} of {RESTAURANT_PERMISSIONS.length} permissions selected
+          </p>
+        </div>
+        <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={applyRoleDefaults}>
+          Apply {restaurantRoleLabel(role)} defaults
         </Button>
       </div>
-      <ScrollArea className="h-52 rounded-md border border-border p-3">
-        <div className="space-y-4">
-          {Array.from(grouped.entries()).map(([module, modulePermissions]) => (
-            <div key={module} className="space-y-2">
-              <p className="text-xs font-semibold capitalize text-muted-foreground">{module}</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {modulePermissions.map((perm) => (
-                  <label
-                    key={perm.code}
-                    className="flex cursor-pointer items-start gap-2 rounded-md p-2 transition-colors hover:bg-muted/50"
-                  >
+      <ScrollArea className="h-56 pr-3">
+        <div className="space-y-2">
+          {Array.from(grouped.entries()).map(([module, modulePermissions]) => {
+            const selectedCount = modulePermissions.filter((p) => permissions.includes(p.code)).length;
+            const allSelected = selectedCount === modulePermissions.length;
+            return (
+              <Collapsible key={module} defaultOpen={selectedCount > 0}>
+                <div className="rounded-md border border-border/60 bg-background">
+                  <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-muted/40">
+                    <div className="flex items-center gap-2">
+                      <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
+                      <span className="text-sm font-medium capitalize">{module}</span>
+                      <Badge variant="outline" className="text-[10px] font-normal">
+                        {selectedCount}/{modulePermissions.length}
+                      </Badge>
+                    </div>
                     <Checkbox
-                      checked={permissions.includes(perm.code)}
-                      onCheckedChange={(checked) => toggle(perm.code, checked === true)}
-                      className="mt-0.5"
+                      checked={allSelected}
+                      onCheckedChange={(checked) => toggleModule(modulePermissions, checked === true)}
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label={`Toggle all ${module} permissions`}
                     />
-                    <span className="space-y-0.5">
-                      <span className="block font-mono text-[11px] leading-none">{perm.code}</span>
-                      <span className="block text-[11px] text-muted-foreground">{perm.description}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          ))}
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="space-y-1 border-t border-border/60 px-3 py-2">
+                    {modulePermissions.map((perm) => (
+                      <label
+                        key={perm.code}
+                        className="flex cursor-pointer items-start gap-2.5 rounded-md px-1 py-1.5 transition-colors hover:bg-muted/50"
+                      >
+                        <Checkbox
+                          checked={permissions.includes(perm.code)}
+                          onCheckedChange={(checked) => toggle(perm.code, checked === true)}
+                          className="mt-0.5"
+                        />
+                        <span className="min-w-0 space-y-0.5">
+                          <span className="block text-sm leading-none">{perm.description}</span>
+                          <span className="block text-[10px] text-muted-foreground">
+                            {perm.actions.join(" · ")}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </CollapsibleContent>
+                </div>
+              </Collapsible>
+            );
+          })}
         </div>
       </ScrollArea>
     </div>
@@ -203,11 +269,13 @@ function AddRestaurantUserDialog({
   onOpenChange,
   actorEmail,
   restaurants,
+  onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   actorEmail: string | null;
   restaurants: { id: string; name: string }[];
+  onCreated: () => void;
 }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -216,11 +284,12 @@ function AddRestaurantUserDialog({
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [restaurantId, setRestaurantId] = useState("");
-  const [role, setRole] = useState<RestaurantRole>("restaurant_manager");
+  const [role, setRole] = useState<RestaurantRole>("restaurant_owner");
   const [permissions, setPermissions] = useState<string[]>(
-    getDefaultPermissionsForRole("restaurant_manager"),
+    getDefaultPermissionsForRole("restaurant_owner"),
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState<string | null>(null);
   const [created, setCreated] = useState<RestaurantUserRecord | null>(null);
 
   useEffect(() => {
@@ -232,9 +301,10 @@ function AddRestaurantUserDialog({
       setPassword(generateRestaurantUserPassword());
       setShowPassword(false);
       setRestaurantId(restaurants[0]?.id ?? "");
-      setRole("restaurant_manager");
-      setPermissions(getDefaultPermissionsForRole("restaurant_manager"));
+      setRole("restaurant_owner");
+      setPermissions(getDefaultPermissionsForRole("restaurant_owner"));
       setErrors({});
+      setFormError(null);
       setCreated(null);
     }
   }, [open, restaurants]);
@@ -246,17 +316,30 @@ function AddRestaurantUserDialog({
   const createMutation = useMutation({
     mutationFn: createRestaurantUser,
     onSuccess: (result) => {
-      if (result.ok) setCreated(result.user);
-      else {
-        setErrors({ email: result.error });
+      if (result.ok) {
+        setCreated(result.user);
+        onCreated();
+      } else {
+        setFormError(result.error);
+        if (result.error.toLowerCase().includes("email")) {
+          setErrors({ email: result.error });
+        }
         toast.error(result.error);
       }
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      setFormError(error.message);
+      toast.error(error.message);
+    },
   });
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setFormError(null);
+    if (!restaurantId) {
+      setErrors({ restaurantId: "Select a restaurant" });
+      return;
+    }
     const parsed = addUserSchema.safeParse({
       fullName,
       email,
@@ -294,34 +377,46 @@ function AddRestaurantUserDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
         {created ? (
           <div className="space-y-5">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <BadgeCheck className="size-5 text-emerald-500" />
-                Restaurant user provisioned
+                Account ready
               </DialogTitle>
               <DialogDescription>
-                A Firebase Auth account was created with Restaurant Management access.
+                {created.full_name || created.email} can now sign in to the Restaurant Management
+                application.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3 text-sm">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-muted-foreground">Email</span>
-                <button
-                  type="button"
-                  className="flex items-center gap-1.5 font-mono text-xs hover:text-primary"
-                  onClick={() => copy(created.email, "Email")}
-                >
-                  {created.email}
-                  <Copy className="size-3" />
-                </button>
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-muted-foreground">Restaurant</span>
-                <span className="text-xs font-medium">{restaurantName ?? created.restaurant_id}</span>
+            <div className="space-y-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">Email</p>
+                  <button
+                    type="button"
+                    className="mt-0.5 flex items-center gap-1.5 font-mono text-xs hover:text-primary"
+                    onClick={() => copy(created.email, "Email")}
+                  >
+                    {created.email}
+                    <Copy className="size-3" />
+                  </button>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Role</p>
+                  <p className="mt-0.5 text-sm font-medium">{restaurantRoleLabel(created.role)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Restaurant</p>
+                  <p className="mt-0.5 text-sm font-medium">
+                    {restaurantName ?? created.restaurant_id}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Permissions</p>
+                  <p className="mt-0.5 text-sm font-medium">{created.permissions.length} modules</p>
+                </div>
               </div>
               <Separator />
               <div className="flex items-center justify-between gap-2">
@@ -336,142 +431,192 @@ function AddRestaurantUserDialog({
                 </button>
               </div>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Share credentials over a secure channel. The user should change their password after
+              first sign-in.
+            </p>
             <DialogFooter>
               <Button onClick={() => onOpenChange(false)}>Done</Button>
             </DialogFooter>
           </div>
         ) : (
-          <form onSubmit={submit} className="space-y-4">
+          <form onSubmit={submit} className="space-y-5">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <UserPlus className="size-5" />
-                Add Restaurant Management user
+                Provision Restaurant Management user
               </DialogTitle>
               <DialogDescription>
-                Creates a real Firebase Auth account, assigns one restaurant, and grants module
-                permissions for the Restaurant Management application.
+                Creates a Firebase Auth account, assigns one restaurant, and grants module
+                permissions. The user cannot switch restaurants after sign-in.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="rm-full-name">Full name</Label>
-                <Input
-                  id="rm-full-name"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Thabo Mokoena"
-                  required
-                />
-                {errors["fullName"] && <p className="text-xs text-destructive">{errors["fullName"]}</p>}
+            {formError && (
+              <Alert variant="destructive">
+                <AlertTitle>Could not create user</AlertTitle>
+                <AlertDescription>{formError}</AlertDescription>
+              </Alert>
+            )}
+
+            {restaurants.length === 0 && (
+              <Alert>
+                <Store className="size-4" />
+                <AlertTitle>No restaurants available</AlertTitle>
+                <AlertDescription>
+                  Add at least one restaurant under Restaurants before provisioning users.
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Profile
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="rm-full-name">Full name</Label>
+                  <Input
+                    id="rm-full-name"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Thabo Mokoena"
+                    autoComplete="name"
+                    required
+                  />
+                  {errors["fullName"] && (
+                    <p className="text-xs text-destructive">{errors["fullName"]}</p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="rm-job-title">Job title (optional)</Label>
+                  <Input
+                    id="rm-job-title"
+                    value={jobTitle}
+                    onChange={(e) => setJobTitle(e.target.value)}
+                    placeholder="Restaurant Owner"
+                  />
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="rm-job-title">Job title (optional)</Label>
-                <Input
-                  id="rm-job-title"
-                  value={jobTitle}
-                  onChange={(e) => setJobTitle(e.target.value)}
-                  placeholder="Restaurant Manager"
-                />
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="rm-email">Work email</Label>
+                  <Input
+                    id="rm-email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="owner@restaurant.co"
+                    autoComplete="off"
+                    required
+                  />
+                  {errors["email"] && <p className="text-xs text-destructive">{errors["email"]}</p>}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="rm-phone">Phone (optional)</Label>
+                  <Input
+                    id="rm-phone"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+27 82 123 4567"
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="rm-email">Work email</Label>
-                <Input
-                  id="rm-email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="manager@restaurant.co"
-                  required
-                />
-                {errors["email"] && <p className="text-xs text-destructive">{errors["email"]}</p>}
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="rm-phone">Phone (optional)</Label>
-                <Input
-                  id="rm-phone"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+27 82 123 4567"
-                />
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Restaurant assignment
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>Assigned restaurant</Label>
+                  <Select
+                    {...(restaurantId ? { value: restaurantId } : {})}
+                    onValueChange={setRestaurantId}
+                    disabled={restaurants.length === 0}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select restaurant" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {restaurants.map((restaurant) => (
+                        <SelectItem key={restaurant.id} value={restaurant.id}>
+                          {restaurant.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {errors["restaurantId"] && (
+                    <p className="text-xs text-destructive">{errors["restaurantId"]}</p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Role</Label>
+                  <Select value={role} onValueChange={(value) => setRole(value as RestaurantRole)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ROLE_CATALOG.map((entry) => (
+                        <SelectItem key={entry.role} value={entry.role}>
+                          {entry.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {ROLE_CATALOG.find((entry) => entry.role === role)?.blurb}
+                  </p>
+                </div>
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Credentials
+              </p>
               <div className="space-y-1.5">
-                <Label>Assigned restaurant</Label>
-                <Select value={restaurantId} onValueChange={setRestaurantId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select restaurant" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {restaurants.map((restaurant) => (
-                      <SelectItem key={restaurant.id} value={restaurant.id}>
-                        {restaurant.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {errors["restaurantId"] && (
-                  <p className="text-xs text-destructive">{errors["restaurantId"]}</p>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="rm-password">Temporary password</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => {
+                      setPassword(generateRestaurantUserPassword());
+                      setShowPassword(true);
+                    }}
+                  >
+                    <KeyRound className="mr-1 size-3" />
+                    Generate strong
+                  </Button>
+                </div>
+                <div className="relative">
+                  <Input
+                    id="rm-password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="pr-10 font-mono text-xs"
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowPassword((current) => !current)}
+                  >
+                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </div>
+                {errors["password"] && (
+                  <p className="text-xs text-destructive">{errors["password"]}</p>
                 )}
               </div>
-              <div className="space-y-1.5">
-                <Label>Role</Label>
-                <Select value={role} onValueChange={(value) => setRole(value as RestaurantRole)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ROLE_CATALOG.map((entry) => (
-                      <SelectItem key={entry.role} value={entry.role}>
-                        {entry.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="rm-password">Temporary password</Label>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => {
-                    setPassword(generateRestaurantUserPassword());
-                    setShowPassword(true);
-                  }}
-                >
-                  <KeyRound className="mr-1 size-3" />
-                  Generate strong
-                </Button>
-              </div>
-              <div className="relative">
-                <Input
-                  id="rm-password"
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="pr-10 font-mono text-xs"
-                  required
-                />
-                <button
-                  type="button"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => setShowPassword((current) => !current)}
-                >
-                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              </div>
-              {errors["password"] && <p className="text-xs text-destructive">{errors["password"]}</p>}
             </div>
 
             <PermissionPicker permissions={permissions} onChange={setPermissions} role={role} />
@@ -479,11 +624,14 @@ function AddRestaurantUserDialog({
               <p className="text-xs text-destructive">{errors["permissions"]}</p>
             )}
 
-            <DialogFooter>
+            <DialogFooter className="gap-2 sm:gap-0">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={createMutation.isPending || restaurants.length === 0}>
+              <Button
+                type="submit"
+                disabled={createMutation.isPending || restaurants.length === 0 || !restaurantId}
+              >
                 {createMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
                 Create account
               </Button>
@@ -797,20 +945,54 @@ export function RestaurantManagementTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold">Restaurant Management</h3>
-          <p className="text-sm text-muted-foreground">
-            Provision users who will access the separate Restaurant Management application.
+      <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-border bg-muted/20 p-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Crown className="size-4 text-amber-500" />
+            <h3 className="text-base font-semibold">Restaurant Management access</h3>
+          </div>
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Provision owners, managers and staff who will sign in to the separate Restaurant
+            Management application. Each user is locked to one restaurant.
           </p>
         </div>
-        {canManage && (
-          <Button onClick={() => setAddOpen(true)} disabled={restaurantOptions.length === 0}>
-            <UserPlus className="mr-2 size-4" />
-            Add user
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="gap-1.5 font-normal">
+            {usersQuery.isError ? (
+              <>
+                <WifiOff className="size-3 text-amber-500" />
+                Offline
+              </>
+            ) : (
+              <>
+                <span className="relative flex size-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+                </span>
+                <Wifi className="size-3 text-emerald-500" />
+                Firebase live
+              </>
+            )}
+          </Badge>
+          {canManage && (
+            <Button onClick={() => setAddOpen(true)} disabled={restaurantOptions.length === 0}>
+              <UserPlus className="mr-2 size-4" />
+              Add user
+            </Button>
+          )}
+        </div>
       </div>
+
+      {restaurantOptions.length === 0 && (
+        <Alert>
+          <Store className="size-4" />
+          <AlertTitle>No restaurants in Firebase</AlertTitle>
+          <AlertDescription>
+            Create restaurants first under the Restaurants section, then return here to assign
+            owners and managers.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
@@ -871,7 +1053,9 @@ export function RestaurantManagementTab({
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <Avatar className="size-8">
-                          <AvatarFallback className="text-xs font-semibold">
+                          <AvatarFallback
+                            className={`text-xs font-semibold ${avatarColor(member.uid)}`}
+                          >
                             {initialsOf(member.full_name, member.email)}
                           </AvatarFallback>
                         </Avatar>
@@ -892,11 +1076,17 @@ export function RestaurantManagementTab({
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary">{restaurantRoleLabel(member.role)}</Badge>
+                      <Badge
+                        variant={member.role === "restaurant_owner" ? "default" : "secondary"}
+                        className="gap-1"
+                      >
+                        {member.role === "restaurant_owner" && <Crown className="size-3" />}
+                        {restaurantRoleLabel(member.role)}
+                      </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {member.permissions.length} modules
+                      <Badge variant="outline" className="text-[10px] tabular-nums">
+                        {member.permissions.length} granted
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -1013,6 +1203,7 @@ export function RestaurantManagementTab({
         onOpenChange={setAddOpen}
         actorEmail={actorEmail}
         restaurants={restaurantOptions}
+        onCreated={() => void invalidate()}
       />
 
       <EditRestaurantUserDialog
