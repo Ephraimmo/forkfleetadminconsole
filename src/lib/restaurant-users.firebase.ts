@@ -23,6 +23,7 @@ import {
   getDefaultPermissionsForRole,
   isRestaurantPermission,
   isRestaurantRole,
+  isRtdbSafePermissionMap,
   mapToPermissions,
   permissionsToMap,
   type RestaurantRole,
@@ -112,20 +113,29 @@ function friendlyAuthError(err: unknown): string {
 
 function friendlyRtdbError(err: unknown): string {
   const code = (err as { code?: string } | null | undefined)?.code ?? "";
+  const message = err instanceof Error ? err.message : "";
   if (code === "PERMISSION_DENIED") {
     return "Database permission denied. Deploy the updated database.rules.json from this project, or ensure Realtime Database rules allow provisioning.";
   }
-  return err instanceof Error && err.message ? err.message : "Failed to save user profile.";
+  if (message.includes("invalid key") || message.includes("contains an invalid key")) {
+    return "Could not save permissions — invalid database key format. Refresh the page and try again.";
+  }
+  return message || "Failed to save user profile.";
 }
 
 async function writeRestaurantUserProfile(
   uid: string,
   record: RestaurantUserRecord,
 ): Promise<void> {
+  const raw = toRawRestaurantUser(record);
+  const permMap = raw.permissions as Record<string, boolean>;
+  if (!isRtdbSafePermissionMap(permMap)) {
+    throw new Error("Permission map contains invalid RTDB keys.");
+  }
   await rtdbSetWithApp(
     PROVISIONER_APP_NAME,
     `${RESTAURANT_USERS_PATH}/${uid}`,
-    toRawRestaurantUser(record),
+    raw,
   );
 }
 

@@ -280,16 +280,39 @@ export function getDefaultPermissionsForRole(role: RestaurantRole): string[] {
   );
 }
 
+/**
+ * Firebase RTDB object keys cannot contain ".", "#", "$", "/", "[", or "]".
+ * Permission codes like "rm.dashboard.view" must be encoded before map storage.
+ */
+export function encodePermissionKeyForRtdb(code: string): string {
+  return code.replace(/\./g, "_");
+}
+
+export function decodePermissionKeyFromRtdb(key: string): string {
+  if (key.includes(".")) return key;
+  if (!key.startsWith("rm_")) return key;
+  return key.split("_").join(".");
+}
+
+/** Returns true when every key is safe for Firebase RTDB object maps. */
+export function isRtdbSafePermissionMap(map: Record<string, boolean>): boolean {
+  return Object.keys(map).every(
+    (key) => key.length > 0 && !/[.#$/\[\]]/.test(key),
+  );
+}
+
 export function permissionsToMap(codes: string[]): Record<string, boolean> {
   const map: Record<string, boolean> = {};
-  for (const code of codes.filter(isRestaurantPermission)) map[code] = true;
+  for (const code of codes.filter(isRestaurantPermission)) {
+    map[encodePermissionKeyForRtdb(code)] = true;
+  }
   return map;
 }
 
 export function mapToPermissions(map: Record<string, boolean> | null | undefined): string[] {
   return Object.entries(map ?? {})
     .filter(([, enabled]) => enabled === true)
-    .map(([code]) => code)
+    .map(([key]) => decodePermissionKeyFromRtdb(key))
     .filter(isRestaurantPermission);
 }
 

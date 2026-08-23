@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  decodePermissionKeyFromRtdb,
+  encodePermissionKeyForRtdb,
   getDefaultPermissionsForRole,
+  isRtdbSafePermissionMap,
   mapToPermissions,
   permissionsToMap,
   RESTAURANT_PERMISSION_CODES,
@@ -27,6 +30,24 @@ describe("restaurant-permissions", () => {
   it("round-trips permission maps", () => {
     const codes = getDefaultPermissionsForRole("restaurant_manager");
     expect(mapToPermissions(permissionsToMap(codes))).toEqual(codes);
+  });
+
+  it("encodes permission keys without dots for Firebase RTDB", () => {
+    const ownerMap = permissionsToMap(getDefaultPermissionsForRole("restaurant_owner"));
+    expect(isRtdbSafePermissionMap(ownerMap)).toBe(true);
+    expect(Object.keys(ownerMap)).toContain("rm_dashboard_view");
+    expect(Object.keys(ownerMap)).not.toContain("rm.dashboard.view");
+    expect(decodePermissionKeyFromRtdb("rm_dashboard_view")).toBe("rm.dashboard.view");
+    expect(encodePermissionKeyForRtdb("rm.dashboard.view")).toBe("rm_dashboard_view");
+  });
+
+  it("decodes legacy dot keys from older records", () => {
+    expect(
+      mapToPermissions({
+        "rm.orders.view": true,
+        "rm_dashboard_view": true,
+      }),
+    ).toEqual(expect.arrayContaining(["rm.orders.view", "rm.dashboard.view"]));
   });
 });
 
