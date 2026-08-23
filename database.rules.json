@@ -1,0 +1,84 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "staffUsers": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid == $uid || root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+        ".validate": "newData.hasChildren(['email', 'roles', 'status'])"
+      }
+    },
+
+    "restaurantUsers": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid == $uid || root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+        ".validate": "newData.hasChildren(['uid', 'email', 'restaurant_id', 'role', 'permissions', 'status']) && newData.child('restaurant_id').isString() && newData.child('restaurant_id').val().length > 0 && newData.child('status').val().matches(/^(active|suspended)$/)"
+      }
+    },
+
+    "restaurants": {
+      "$restaurantId": {
+        ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() == $restaurantId)",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() == $restaurantId && root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.profile.manage').val() == true))"
+      }
+    },
+
+    "restaurantBranches": {
+      "$restaurantId": {
+        ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() == $restaurantId)",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() == $restaurantId && root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.profile.manage').val() == true))"
+      }
+    },
+
+    "menus": {
+      "$restaurantId": {
+        ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() == $restaurantId && root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.menu.view').val() == true))",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() == $restaurantId && root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.menu.manage').val() == true))"
+      }
+    },
+
+    "orders": {
+      "$orderId": {
+        ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.orders.view').val() == true && data.child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val()))",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.orders.manage').val() == true && (!data.exists() ? newData.child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val() : data.child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val())))"
+      }
+    },
+
+    "drivers": {
+      "$driverId": {
+        ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.drivers.view').val() == true)",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.drivers.manage').val() == true)"
+      }
+    },
+
+    "driverAssignments": {
+      "$assignmentId": {
+        ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.drivers.view').val() == true && data.child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val()))",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.drivers.manage').val() == true && newData.child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val()))"
+      }
+    },
+
+    "promotions": {
+      ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.promotions.view').val() == true)",
+      ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.promotions.manage').val() == true)"
+    },
+
+    "settings": {
+      ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.settings.view').val() == true)",
+      ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm.settings.manage').val() == true)"
+    },
+
+    "staffAudit": {
+      ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+      ".write": "auth != null"
+    },
+
+    "restaurantUserAudit": {
+      ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+      ".write": "auth != null"
+    }
+  }
+}
