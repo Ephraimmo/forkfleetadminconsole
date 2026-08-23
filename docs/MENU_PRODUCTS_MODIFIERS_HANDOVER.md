@@ -229,15 +229,138 @@ rm.menu.view (read), rm.menu.manage (write). Scope everything to session.restaur
 
 ---
 
-## Operator quick start
+## Using the Menus module
 
-1. **Super Admin** → Menus → select restaurant  
-2. **Modifier groups** (left) → add e.g. “Spice level” with choices `Mild, Medium, Hot`  
-3. **Products** → expand a product → check modifier choices → saves assignment  
-4. **Variants / add-ons** → add under the product; confirm they appear immediately (expand accordion)  
-5. Verify in Firebase Console:  
-   - `/menus/{restaurantId}/variants/{id}.menu_item_id`  
-   - `/menus/{restaurantId}/items/{id}.modifier_ids`  
+### Before you start
+
+| Requirement | Detail |
+|-------------|--------|
+| **Route** | Super Admin → **Catalogue → Menus** (`/menus`) |
+| **Permissions** | `menus.view` to browse; `menus.manage` to create, edit, or delete |
+| **Restaurant scope** | Use the **restaurant picker** (top right). All categories, products, variants, add-ons, and modifier groups are scoped to the selected restaurant. The URL stores `?restaurant={id}` so you can bookmark a menu. |
+| **Live sync** | Changes save to Firebase RTDB immediately and appear without a page refresh. |
+
+If products look missing after opening Menus, check that the correct restaurant is selected — the picker auto-selects a restaurant with existing menu items when possible.
+
+---
+
+### Which customization type to use
+
+| Need | Use | Example |
+|------|-----|---------|
+| Required size or version with a price change | **Variant** | Small / Medium / Large (+R 25 for Large) |
+| Optional paid extra tied to one product | **Add-on** | Extra cheese (+R 15) |
+| Shared choice group across many products | **Modifier group** | Spice level, cooking preference, portion size |
+
+Do not combine these into one field. Variants and add-ons link via `menu_item_id`; modifiers link via `modifier_ids` on the product.
+
+---
+
+### Recommended setup order
+
+1. **Categories** (left column) — group products (e.g. Pizzas, Drinks).  
+2. **Products** — add base items with price, prep time, points, and image.  
+3. **Modifier groups** (left column) — create reusable choice groups before assigning them.  
+4. **Per product** (expand accordion) — add variants, add-ons, and assign modifier choices.
+
+---
+
+### Step-by-step
+
+#### 1. Create modifier groups (left column)
+
+1. Enter a **group name** (e.g. `Spice level`).  
+2. Choose **type**:  
+   - **Option** — required, single pick (min 1, max 1). Use for size, spice, doneness.  
+   - **Extra** — optional, multi pick (up to 3). Use for toppings or add-on-style choices shared across products.  
+3. Enter **choices** as comma-separated labels: `Mild, Medium, Hot`.  
+4. Optionally check **Include pricing per choice** to set or override prices per choice when assigning to a product.  
+5. Click **Add modifier group**. The group appears in the list and is available to all products for this restaurant.
+
+To remove a group, use the trash icon. Deleting a group does not automatically remove its ID from product `modifier_ids` — re-open affected products and clear assignments if needed.
+
+#### 2. Add and manage products
+
+1. Use **Add a product** to create an item (name, category, price, optional sale price, points, prep time, description, image).  
+2. In the **Products** accordion, click a row to expand it. The collapsed row shows:  
+   `{n} variants · {n} add-ons · {n} modifiers · {n} min prep`  
+3. Inside the expanded panel you can:  
+   - Toggle **Available** on/off  
+   - Update **Price**, **Sale price**, and **Points** → **Save pricing**  
+   - Upload or change the product image (Cloudinary)
+
+#### 3. Add variants (inside expanded product)
+
+1. In the **Variants** column, enter a name (e.g. `Large`) and optional **price delta** (+R).  
+2. Click **+** — the variant saves with `menu_item_id` set to this product (and `menuItemId` alias for cross-app compatibility).  
+3. Confirm the collapsed row count increases and the variant appears in the list with `+R {delta}`.
+
+Variants are product-specific. Use them when the customer must pick one size/version.
+
+#### 4. Add add-ons (inside expanded product)
+
+1. In the **Add-ons** column, enter a name (e.g. `Extra cheese`) and price.  
+2. Click **+** — the add-on links to this product via `menu_item_id`.  
+3. Confirm it appears with price and max quantity in the list.
+
+Add-ons are optional extras for a single product. Use them when the extra does not need to be shared as a modifier group.
+
+#### 5. Assign modifier groups (inside expanded product)
+
+1. In the **Modifier groups** column, each restaurant group is listed with its choices.  
+2. **Check** the choices that apply to this product — checking any choice assigns the group and saves immediately to Firebase.  
+3. If **Include pricing** is enabled on the group, edit the price field next to a selected choice to override the default for this product only.  
+4. **Uncheck** all choices in a group to remove that group from the product’s `modifier_ids`.
+
+Assignment writes both `modifier_ids` / `modifierIds` and `modifier_config` / `modifierConfig` on the menu item.
+
+---
+
+### Verify in Firebase Console
+
+After setup, confirm data under the selected restaurant:
+
+```
+/menus/{restaurantId}/items/{itemId}
+  modifier_ids: ["mod_spice"]
+  modifier_config.mod_spice.0: { selected: true, price: 0 }
+
+/menus/{restaurantId}/variants/{varId}
+  menu_item_id: "{itemId}"
+  menuItemId: "{itemId}"    ← alias written for Orderly Hub
+
+/menus/{restaurantId}/addons/{addonId}
+  menu_item_id: "{itemId}"
+
+/menus/{restaurantId}/modifiers/{modId}
+  restaurant_id: "{restaurantId}"
+  choices: [...]
+```
+
+Do **not** write new modifier data to legacy `/modifiers/{id}` — use the scoped path above.
+
+---
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Variants or add-ons missing in UI but present in Firebase | Record uses `menuItemId` only | Already fixed in this repo via normalizers — ensure you are on current Super Admin build; do not filter raw RTDB with `menu_item_id` alone |
+| Modifier groups empty on product | No groups created for restaurant | Add groups in the left column first |
+| Counts show `0 variants` after adding one | Wrong restaurant selected | Switch restaurant picker; variant may be under another `restaurantId` |
+| Changes not visible in Restaurant Management app | RM still reads legacy `/modifiers` or skips normalization | Align RM per [Orderly Hub handover](https://github.com/Ephraimmo/orderlyhub/blob/main/docs/MODIFIERS_SUPER_ADMIN_HANDOVER.md) |
+| Product shows modifier group but customer app does not | Customer app not loading scoped modifiers | Ensure checkout loads `/menus/{restaurantId}/modifiers` into catalog |
+
+---
+
+### Operator quick reference
+
+1. Menus → pick restaurant  
+2. Left: categories + modifier groups  
+3. Add products → expand accordion  
+4. Variants / add-ons: add in product columns  
+5. Modifiers: check choices per product  
+6. Spot-check Firebase paths listed above  
 
 ---
 
