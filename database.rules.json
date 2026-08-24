@@ -6,7 +6,7 @@
     "staffUsers": {
       "$uid": {
         ".read": "auth != null && (auth.uid == $uid || root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
-        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager'))",
+        ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || (!data.exists() && !root.child('staffUsers').hasChildren() && newData.child('roles').hasChild('super_admin')))",
         ".validate": "newData.hasChildren(['email', 'roles', 'status'])"
       }
     },

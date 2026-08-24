@@ -119,4 +119,15 @@ export function rtdbSubscribe<T = unknown>(
   };
 }
 
+/** True when a Realtime Database call failed because security rules denied it. */
+export function isRtdbPermissionDenied(err: unknown): boolean {
+  const code = (err as { code?: string } | null | undefined)?.code ?? "";
+  const message = err instanceof Error ? err.message : "";
+  return (
+    code === "PERMISSION_DENIED" ||
+    message.includes("permission_denied") ||
+    message.toLowerCase().includes("permission denied")
+  );
+}
+
 export const isFirebaseAvailable = (): boolean => isBrowser;

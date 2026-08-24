@@ -25,6 +25,8 @@ import {
 } from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
+import { FirebaseSessionBanner } from "@/components/access/firebase-session-banner";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -576,6 +578,21 @@ function AccessWorkspace({ staff }: { staff: StaffHook }) {
 
   return (
     <Tabs defaultValue="team">
+      {canManage && (
+        <div className="mb-4 space-y-4">
+          <FirebaseSessionBanner />
+          {usersQuery.isError && (
+            <Alert variant="destructive">
+              <WifiOff className="size-4" />
+              <AlertTitle>Could not load console users</AlertTitle>
+              <AlertDescription>
+                {(usersQuery.error as Error | null)?.message ??
+                  "The staff list could not be read from Firebase."}
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <TabsList>
           <TabsTrigger value="team">Team</TabsTrigger>

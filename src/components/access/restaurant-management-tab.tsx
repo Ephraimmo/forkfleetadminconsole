@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { FirebaseSessionBanner } from "@/components/access/firebase-session-banner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -945,6 +946,19 @@ export function RestaurantManagementTab({
 
   return (
     <div className="space-y-4">
+      {canManage && <FirebaseSessionBanner />}
+
+      {usersQuery.isError && (
+        <Alert variant="destructive">
+          <WifiOff className="size-4" />
+          <AlertTitle>Could not load Restaurant Management users</AlertTitle>
+          <AlertDescription>
+            {(usersQuery.error as Error | null)?.message ??
+              "The user list could not be read from Firebase."}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-border bg-muted/20 p-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2">

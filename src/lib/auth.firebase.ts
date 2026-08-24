@@ -13,6 +13,7 @@ import { rolePermissions } from "@/lib/demo-store";
 import {
   FIREBASE_CONFIG,
   isFirebaseAvailable,
+  isRtdbPermissionDenied,
   rtdbGet,
   rtdbPush,
   rtdbSet,
@@ -133,8 +134,46 @@ function friendlyAuthError(err: unknown): string {
     case "auth/wrong-password":
     case "auth/invalid-credential":
       return "Incorrect email or password.";
+    case "auth/operation-not-allowed":
+      return "Email/Password sign-in is disabled for this Firebase project. Enable it under Firebase Console → Authentication → Sign-in method, then try again.";
+    case "auth/unauthorized-domain":
+      return "This domain is not authorized by Firebase. Add it under Firebase Console → Authentication → Settings → Authorized domains.";
+    case "auth/admin-restricted-operation":
+      return "Firebase rejected this operation because of the project's restrictions. Contact the project owner.";
     default:
+      if (isRtdbPermissionDenied(err)) {
+        return friendlyRtdbDenied();
+      }
       return err instanceof Error && err.message ? err.message : "Unexpected Firebase error.";
+  }
+}
+
+/** Actionable guidance for Realtime Database rule denials. */
+function friendlyRtdbDenied(): string {
+  return (
+    "Database permission denied. Two usual causes: (1) this browser only has a demo session — " +
+    "sign out and use Staff Sign In (/auth) with your provisioned console account; " +
+    "(2) the latest database.rules.json is not deployed — run \"firebase deploy --only database\" from this project."
+  );
+}
+
+/**
+ * Returns the Firebase Auth account signed in on the main app, or null when the
+ * console is running on a demo-only session (no real operator authentication).
+ */
+export async function getSignedInFirebaseUser(): Promise<{
+  uid: string;
+  email: string | null;
+} | null> {
+  if (!isFirebaseAvailable()) return null;
+  try {
+    const { getAuth } = await import("firebase/auth");
+    const auth = getAuth(await getMainApp());
+    const user = auth.currentUser;
+    if (!user) return null;
+    return { uid: user.uid, email: user.email };
+  } catch {
+    return null;
   }
 }
 

@@ -12,6 +12,7 @@ import { generateStaffPassword } from "@/lib/auth.firebase";
 import {
   FIREBASE_CONFIG,
   isFirebaseAvailable,
+  isRtdbPermissionDenied,
   rtdbGet,
   rtdbGetWithApp,
   rtdbPush,
@@ -106,16 +107,28 @@ function friendlyAuthError(err: unknown): string {
     case "auth/wrong-password":
     case "auth/invalid-credential":
       return "Incorrect email or password.";
+    case "auth/operation-not-allowed":
+      return "Email/Password sign-in is disabled for this Firebase project. Enable it under Firebase Console → Authentication → Sign-in method, then try again.";
+    case "auth/unauthorized-domain":
+      return "This domain is not authorized by Firebase. Add it under Firebase Console → Authentication → Settings → Authorized domains.";
+    case "auth/admin-restricted-operation":
+      return "Firebase rejected this operation because of the project's restrictions. Contact the project owner.";
     default:
+      if (isRtdbPermissionDenied(err)) {
+        return friendlyRtdbError(err);
+      }
       return err instanceof Error && err.message ? err.message : "Unexpected Firebase error.";
   }
 }
 
 function friendlyRtdbError(err: unknown): string {
-  const code = (err as { code?: string } | null | undefined)?.code ?? "";
   const message = err instanceof Error ? err.message : "";
-  if (code === "PERMISSION_DENIED") {
-    return "Database permission denied. Deploy the updated database.rules.json from this project, or ensure Realtime Database rules allow provisioning.";
+  if (isRtdbPermissionDenied(err)) {
+    return (
+      "Database permission denied. Two usual causes: (1) this browser only has a demo session — " +
+      "sign out and use Staff Sign In (/auth) with your provisioned console account; " +
+      "(2) the latest database.rules.json is not deployed — run \"firebase deploy --only database\" from this project."
+    );
   }
   if (message.includes("invalid key") || message.includes("contains an invalid key")) {
     return "Could not save permissions — invalid database key format. Refresh the page and try again.";
@@ -369,7 +382,7 @@ export async function updateRestaurantUserProfile(input: {
     });
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to update profile." };
+    return { ok: false, error: friendlyRtdbError(err) };
   }
 }
 
@@ -398,7 +411,7 @@ export async function updateRestaurantUserAssignment(input: {
     });
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to update assignment." };
+    return { ok: false, error: friendlyRtdbError(err) };
   }
 }
 
@@ -426,7 +439,7 @@ export async function updateRestaurantUserPermissions(input: {
     });
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to update permissions." };
+    return { ok: false, error: friendlyRtdbError(err) };
   }
 }
 
@@ -450,7 +463,7 @@ export async function setRestaurantUserStatus(input: {
     });
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to update status." };
+    return { ok: false, error: friendlyRtdbError(err) };
   }
 }
 
@@ -475,7 +488,7 @@ export async function removeRestaurantUser(input: {
     });
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to remove user." };
+    return { ok: false, error: friendlyRtdbError(err) };
   }
 }
 
@@ -505,7 +518,13 @@ export async function sendRestaurantUserPasswordReset(input: {
 
 export async function fetchRestaurantUsersOnce(): Promise<RestaurantUserRecord[]> {
   if (!isFirebaseAvailable()) return [];
-  return toRestaurantUserList(await rtdbGet<Record<string, RestaurantUserRaw>>(RESTAURANT_USERS_PATH));
+  try {
+    return toRestaurantUserList(
+      await rtdbGet<Record<string, RestaurantUserRaw>>(RESTAURANT_USERS_PATH),
+    );
+  } catch (err) {
+    throw new Error(friendlyRtdbError(err));
+  }
 }
 
 export function subscribeRestaurantUsers(
