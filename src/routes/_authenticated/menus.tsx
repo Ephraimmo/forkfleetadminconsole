@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ImagePlus, Loader2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import {
+  FolderOpen,
+  ImagePlus,
+  LayoutGrid,
+  Loader2,
+  Package,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  UtensilsCrossed,
+} from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
 import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
@@ -29,6 +40,28 @@ import {
 } from "@/components/ui/accordion";
 import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   deleteFirebaseMenuChild as deleteMenuChild,
   deleteFirebaseCategory as deleteCategory,
@@ -154,11 +187,25 @@ function updateProductModifierChoicePrice(
   return config;
 }
 
+type PendingDelete =
+  | { kind: "category"; id: string; label: string }
+  | { kind: "product"; id: string; label: string }
+  | { kind: "variant"; id: string; label: string }
+  | { kind: "addon"; id: string; label: string }
+  | { kind: "modifier"; id: string; label: string };
+
 function MenusPage() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const [restaurantId, setRestaurantId] = useState(search.restaurant);
   const [newProductImageUrl, setNewProductImageUrl] = useState("");
+  const [activeTab, setActiveTab] = useState("products");
+  const [productSearch, setProductSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [addProductOpen, setAddProductOpen] = useState(false);
+  const [newProductCategoryId, setNewProductCategoryId] = useState("");
+  const [newModifierType, setNewModifierType] = useState<"option" | "extra">("option");
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const queryClient = useQueryClient();
   const { rows: restaurants, loading: rLoading } = useFirebaseRestaurants();
 
@@ -303,7 +350,7 @@ function MenusPage() {
       required={["menus.view", "menus.manage"]}
       breadcrumb={["Catalogue", "Menus"]}
       title="Menu management"
-      description="All categories, products and pricing are saved to Firebase Realtime Database."
+      description="Build and maintain your restaurant menu — categories, products, pricing, and customisation options."
       actions={
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="hidden gap-1.5 font-normal sm:inline-flex">
@@ -373,359 +420,66 @@ function MenusPage() {
           return <Skeleton className="h-96 w-full" />;
         const { categories, items, variants, addons, modifiers } = menuQuery.data;
 
-        // Build logical category → items groups so the products section mirrors
-        // how a customer menu looks (category order from sort_order, uncategorised
-        // items at the bottom). This also guarantees deleted-category items are
-        // still visible instead of disappearing.
-        const itemsByCategory = new Map<string, typeof items>();
-        const uncategorized: typeof items = [];
-        for (const item of items) {
-          if (item.category_id && categories.some((c) => c.id === item.category_id)) {
-            const arr = itemsByCategory.get(item.category_id) ?? [];
-            arr.push(item);
-            itemsByCategory.set(item.category_id, arr);
-          } else {
-            uncategorized.push(item);
+        const sortedCategories = [...categories].sort(
+          (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0),
+        );
+
+        const filteredItems = items.filter((item) => {
+          const q = productSearch.trim().toLowerCase();
+          if (q) {
+            const matchesSearch =
+              item.name.toLowerCase().includes(q) ||
+              item.description?.toLowerCase().includes(q) ||
+              item.category.toLowerCase().includes(q);
+            if (!matchesSearch) return false;
+          }
+          if (categoryFilter === "all") return true;
+          if (categoryFilter === "uncategorized") {
+            return !item.category_id || !categories.some((c) => c.id === item.category_id);
+          }
+          return item.category_id === categoryFilter;
+        });
+
+        const productGroups: { id: string; name: string; items: typeof items }[] = [];
+        for (const cat of sortedCategories) {
+          const catItems = filteredItems.filter((i) => i.category_id === cat.id);
+          if (catItems.length > 0) {
+            productGroups.push({ id: cat.id, name: cat.name, items: catItems });
           }
         }
+        const uncategorizedItems = filteredItems.filter(
+          (i) => !i.category_id || !categories.some((c) => c.id === i.category_id),
+        );
+        if (uncategorizedItems.length > 0) {
+          productGroups.push({
+            id: "uncategorized",
+            name: "Uncategorised",
+            items: uncategorizedItems,
+          });
+        }
 
-        return (
-          <div className="space-y-4">
-            <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-              <Card className="h-fit">
-                <CardHeader>
-                  <CardTitle className="text-base">Categories</CardTitle>
-                  <CardDescription>
-                    {categories.length} groups · {items.length} products synced from Firebase
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {canManage && (
-                    <form
-                      className="flex gap-2"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        const form = new FormData(event.currentTarget);
-                        categoryMutation.mutate({
-                          restaurant_id: restaurantId,
-                          name: String(form.get("name")),
-                          sort_order: categories.length,
-                        });
-                        event.currentTarget.reset();
-                      }}
-                    >
-                      <Input name="name" placeholder="New category" required className="h-9" />
-                      <Button
-                        type="submit"
-                        size="icon"
-                        aria-label="Add category"
-                        disabled={categoryMutation.isPending}
-                      >
-                        {categoryMutation.isPending ? (
-                          <Loader2 className="size-4 animate-spin" />
-                        ) : (
-                          <Plus className="size-4" />
-                        )}
-                      </Button>
-                    </form>
-                  )}
-                  {categories.map((category) => (
-                    <div
-                      key={category.id}
-                      className="flex items-center justify-between rounded-md border border-border px-3 py-2"
-                    >
-                      <div>
-                        <p className="text-sm font-medium">{category.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {items.filter((i) => i.category_id === category.id).length} items
-                        </p>
-                      </div>
-                      {canManage && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() =>
-                            categoryDelete.mutate({ restaurant_id: restaurantId, id: category.id })
-                          }
-                        >
-                          <Trash2 className="size-4 text-destructive" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                  {categories.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      No categories yet — add one to get started.
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
+        const availableCount = items.filter((i) => i.is_available).length;
 
-              <Card className="h-fit">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <SlidersHorizontal className="size-4" /> Modifier groups
-                  </CardTitle>
-                  <CardDescription>
-                    Choice groups (e.g. spice level, size) — assign to products below.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {modifiers.map((modifier) => (
-                    <div
-                      key={modifier.id}
-                      className="rounded-md border border-border px-3 py-2 text-sm"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="font-medium">{modifier.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {modifier.type} · {modifier.choices.length} choices ·{" "}
-                            {modifier.min_selections}–{modifier.max_selections} picks
-                          </p>
-                          <p className="mt-1 truncate text-xs text-muted-foreground">
-                            {modifier.choices.map((c) => c.label).join(", ")}
-                          </p>
-                        </div>
-                        {canManage && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() =>
-                              childDelete.mutate({
-                                restaurant_id: restaurantId,
-                                id: modifier.id,
-                                kind: "modifier",
-                              })
-                            }
-                          >
-                            <Trash2 className="size-4 text-destructive" />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {modifiers.length === 0 && (
-                    <p className="text-sm text-muted-foreground">No modifier groups yet.</p>
-                  )}
-                  {canManage && (
-                    <form
-                      className="space-y-2 rounded-md border border-dashed border-border p-3"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        const form = new FormData(event.currentTarget);
-                        const type = String(form.get("type")) === "extra" ? "extra" : "option";
-                        const includePricing = form.get("include_pricing") === "on";
-                        const choiceLabels = String(form.get("choices") ?? "")
-                          .split(",")
-                          .map((s) => s.trim())
-                          .filter(Boolean);
-                        if (choiceLabels.length === 0) {
-                          toast.error("Enter at least one choice (comma-separated).");
-                          return;
-                        }
-                        modifierMutation.mutate({
-                          restaurant_id: restaurantId,
-                          name: String(form.get("name")),
-                          type,
-                          include_pricing: includePricing,
-                          required: type === "option",
-                          min_selections: type === "option" ? 1 : 0,
-                          max_selections: type === "option" ? 1 : 3,
-                          choices: choiceLabels.map((label) => ({ label, price: 0 })),
-                        });
-                        event.currentTarget.reset();
-                      }}
-                    >
-                      <Input name="name" placeholder="Group name (e.g. Spice level)" required className="h-9" />
-                      <select
-                        name="type"
-                        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                        defaultValue="option"
-                      >
-                        <option value="option">Option (required, single)</option>
-                        <option value="extra">Extra (optional, multi)</option>
-                      </select>
-                      <Input
-                        name="choices"
-                        placeholder="Choices: Mild, Medium, Hot"
-                        required
-                        className="h-9"
-                      />
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Checkbox name="include_pricing" /> Include pricing per choice
-                      </label>
-                      <Button type="submit" size="sm" disabled={modifierMutation.isPending} className="w-full">
-                        {modifierMutation.isPending ? (
-                          <Loader2 className="mr-2 size-4 animate-spin" />
-                        ) : (
-                          <Plus className="mr-2 size-4" />
-                        )}
-                        Add modifier group
-                      </Button>
-                    </form>
-                  )}
-                </CardContent>
-              </Card>
+        const handleConfirmDelete = () => {
+          if (!pendingDelete) return;
+          const p = { restaurant_id: restaurantId, id: pendingDelete.id };
+          switch (pendingDelete.kind) {
+            case "category":
+              categoryDelete.mutate(p);
+              break;
+            case "product":
+              itemDelete.mutate(p);
+              break;
+            case "variant":
+            case "addon":
+            case "modifier":
+              childDelete.mutate({ ...p, kind: pendingDelete.kind });
+              break;
+          }
+          setPendingDelete(null);
+        };
 
-              <div className="space-y-4">
-                {canManage && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base">Add a product</CardTitle>
-                      <CardDescription>
-                        Items are saved instantly to Firebase and live-synced.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <form
-                        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          const form = new FormData(event.currentTarget);
-                          const categoryId = String(form.get("category_id") ?? "");
-                          const sale = Number(form.get("discount_price"));
-                          const imageUrl = newProductImageUrl.trim() || randomProductImage();
-                          itemMutation.mutate({
-                            restaurant_id: restaurantId,
-                            category_id: categoryId || null,
-                            category:
-                              categories.find((c) => c.id === categoryId)?.name ?? "General",
-                            name: String(form.get("name")),
-                            description: String(form.get("description") ?? ""),
-                            price: Number(form.get("price")),
-                            discount_price: sale > 0 ? sale : null,
-                            points_value: Number(form.get("points_value") || 5),
-                            prep_time_minutes: Number(form.get("prep_time_minutes") ?? 15),
-                            is_available: true,
-                            is_featured: false,
-                            image_url: imageUrl,
-                            allergens: [],
-                          });
-                          event.currentTarget.reset();
-                          setNewProductImageUrl("");
-                        }}
-                      >
-                        <div className="space-y-1.5">
-                          <Label htmlFor="name">Product name</Label>
-                          <Input
-                            id="name"
-                            name="name"
-                            required
-                            placeholder="e.g. Margherita Pizza"
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label htmlFor="category_id">Category</Label>
-                          <select
-                            id="category_id"
-                            name="category_id"
-                            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                          >
-                            <option value="">Uncategorised</option>
-                            {categories.map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label htmlFor="price">Price (R)</Label>
-                          <Input
-                            id="price"
-                            name="price"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            required
-                            placeholder="129.00"
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label htmlFor="discount_price">Sale price (R)</Label>
-                          <Input
-                            id="discount_price"
-                            name="discount_price"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            placeholder="Optional"
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label htmlFor="points_value">Points per item</Label>
-                          <Input
-                            id="points_value"
-                            name="points_value"
-                            type="number"
-                            min="0"
-                            defaultValue="5"
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label htmlFor="prep_time_minutes">Prep (min)</Label>
-                          <Input
-                            id="prep_time_minutes"
-                            name="prep_time_minutes"
-                            type="number"
-                            defaultValue="15"
-                          />
-                        </div>
-                        <div className="space-y-1.5 sm:col-span-2">
-                          <Label htmlFor="description">Description</Label>
-                          <Input
-                            id="description"
-                            name="description"
-                            placeholder="Short description shown to customers"
-                          />
-                        </div>
-                        <div className="space-y-1.5 sm:col-span-2 lg:col-span-4">
-                          <CloudinaryImageUpload
-                            label="Product image"
-                            context="product"
-                            value={newProductImageUrl}
-                            onChange={setNewProductImageUrl}
-                            previewAspect="square"
-                          />
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="mt-1 h-7 px-2 text-xs"
-                            onClick={() => setNewProductImageUrl(randomProductImage())}
-                          >
-                            <ImagePlus className="mr-1 size-3.5" /> Use random Unsplash photo
-                          </Button>
-                        </div>
-                        <div className="flex items-end">
-                          <Button type="submit" disabled={itemMutation.isPending} className="gap-2">
-                            {itemMutation.isPending ? (
-                              <Loader2 className="size-4 animate-spin" />
-                            ) : (
-                              <Plus className="size-4" />
-                            )}{" "}
-                            Add product
-                          </Button>
-                        </div>
-                        <p className="flex items-center gap-1.5 text-xs text-muted-foreground sm:col-span-2 lg:col-span-3">
-                          <ImagePlus className="size-3.5" /> Upload to Cloudinary for a real CDN URL,
-                          or use a random Unsplash photo. Sale price and points drive customer
-                          promotions.
-                        </p>
-                      </form>
-                    </CardContent>
-                  </Card>
-                )}
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Products</CardTitle>
-                    <CardDescription>{items.length} items on this menu</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Accordion type="single" collapsible className="w-full">
-                      {items.map((item) => {
+        const renderProductAccordionItem = (item: MenuItem) => {
                         const itemVariants = variantsForMenuItem(variants, item.id);
                         const itemAddons = addonsForMenuItem(addons, item.id);
                         const itemModifiers = modifiersForMenuItem(modifiers, item);
@@ -831,7 +585,11 @@ function MenusPage() {
                                   variant="ghost"
                                   className="text-destructive"
                                   onClick={() =>
-                                    itemDelete.mutate({ restaurant_id: restaurantId, id: item.id })
+                                    setPendingDelete({
+                                      kind: "product",
+                                      id: item.id,
+                                      label: item.name,
+                                    })
                                   }
                                 >
                                   <Trash2 className="mr-1 size-3.5" /> Delete product
@@ -962,10 +720,10 @@ function MenusPage() {
                                             size="icon"
                                             variant="ghost"
                                             onClick={() =>
-                                              childDelete.mutate({
-                                                restaurant_id: restaurantId,
-                                                id: variant.id,
+                                              setPendingDelete({
                                                 kind: "variant",
+                                                id: variant.id,
+                                                label: variant.name,
                                               })
                                             }
                                           >
@@ -1038,10 +796,10 @@ function MenusPage() {
                                             size="icon"
                                             variant="ghost"
                                             onClick={() =>
-                                              childDelete.mutate({
-                                                restaurant_id: restaurantId,
-                                                id: addon.id,
+                                              setPendingDelete({
                                                 kind: "addon",
+                                                id: addon.id,
+                                                label: addon.name,
                                               })
                                             }
                                           >
@@ -1095,7 +853,7 @@ function MenusPage() {
                                 </p>
                                 {modifiers.length === 0 && (
                                   <p className="text-xs text-muted-foreground">
-                                    Create modifier groups in the left column first.
+                                    Create modifier groups on the Menu structure tab first.
                                   </p>
                                 )}
                                 {modifiers.map((modifier) => {
@@ -1180,17 +938,630 @@ function MenusPage() {
                           </AccordionContent>
                         </AccordionItem>
                         );
-                      })}
-                    </Accordion>
-                    {items.length === 0 && (
-                      <p className="py-10 text-center text-sm text-muted-foreground">
-                        No products on this menu yet — add one above.
-                      </p>
+        };
+
+        return (
+          <div className="space-y-6">
+            {/* Overview stats */}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Card>
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10">
+                    <Package className="size-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-semibold tabular-nums">{items.length}</p>
+                    <p className="text-xs text-muted-foreground">Total products</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="flex size-10 items-center justify-center rounded-lg bg-emerald-500/10">
+                    <UtensilsCrossed className="size-5 text-emerald-500" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-semibold tabular-nums">{availableCount}</p>
+                    <p className="text-xs text-muted-foreground">Available now</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="flex size-10 items-center justify-center rounded-lg bg-blue-500/10">
+                    <FolderOpen className="size-5 text-blue-500" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-semibold tabular-nums">{categories.length}</p>
+                    <p className="text-xs text-muted-foreground">Categories</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="flex size-10 items-center justify-center rounded-lg bg-amber-500/10">
+                    <SlidersHorizontal className="size-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-semibold tabular-nums">{modifiers.length}</p>
+                    <p className="text-xs text-muted-foreground">Modifier groups</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <TabsList>
+                  <TabsTrigger value="products" className="gap-1.5">
+                    <LayoutGrid className="size-3.5" />
+                    Products
+                    <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">
+                      {items.length}
+                    </Badge>
+                  </TabsTrigger>
+                  <TabsTrigger value="structure" className="gap-1.5">
+                    <FolderOpen className="size-3.5" />
+                    Menu structure
+                  </TabsTrigger>
+                </TabsList>
+
+                {canManage && (
+                  <Dialog open={addProductOpen} onOpenChange={setAddProductOpen}>
+                    <DialogTrigger asChild>
+                      <Button className="gap-2">
+                        <Plus className="size-4" />
+                        Add product
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+                      <DialogHeader>
+                        <DialogTitle>Add a new product</DialogTitle>
+                        <DialogDescription>
+                          Fill in the details below. The product will appear on the customer menu
+                          immediately after saving.
+                        </DialogDescription>
+                      </DialogHeader>
+                      <form
+                        className="grid gap-4 sm:grid-cols-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const form = new FormData(event.currentTarget);
+                          const sale = Number(form.get("discount_price"));
+                          const imageUrl = newProductImageUrl.trim() || randomProductImage();
+                          itemMutation.mutate(
+                            {
+                              restaurant_id: restaurantId,
+                              category_id: newProductCategoryId || null,
+                              category:
+                                categories.find((c) => c.id === newProductCategoryId)?.name ??
+                                "General",
+                              name: String(form.get("name")),
+                              description: String(form.get("description") ?? ""),
+                              price: Number(form.get("price")),
+                              discount_price: sale > 0 ? sale : null,
+                              points_value: Number(form.get("points_value") || 5),
+                              prep_time_minutes: Number(form.get("prep_time_minutes") ?? 15),
+                              is_available: true,
+                              is_featured: false,
+                              image_url: imageUrl,
+                              allergens: [],
+                            },
+                            {
+                              onSuccess: () => {
+                                setAddProductOpen(false);
+                                setNewProductImageUrl("");
+                                setNewProductCategoryId("");
+                                event.currentTarget.reset();
+                              },
+                            },
+                          );
+                        }}
+                      >
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <Label htmlFor="new-name">Product name</Label>
+                          <Input
+                            id="new-name"
+                            name="name"
+                            required
+                            placeholder="e.g. Margherita Pizza"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label>Category</Label>
+                          <Select
+                            value={newProductCategoryId || "none"}
+                            onValueChange={(v) =>
+                              setNewProductCategoryId(v === "none" ? "" : v)
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">Uncategorised</SelectItem>
+                              {categories.map((c) => (
+                                <SelectItem key={c.id} value={c.id}>
+                                  {c.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="new-price">Price (R)</Label>
+                          <Input
+                            id="new-price"
+                            name="price"
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            required
+                            placeholder="129.00"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="new-sale">Sale price (R)</Label>
+                          <Input
+                            id="new-sale"
+                            name="discount_price"
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="Optional"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="new-points">Loyalty points</Label>
+                          <Input
+                            id="new-points"
+                            name="points_value"
+                            type="number"
+                            min="0"
+                            defaultValue="5"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="new-prep">Prep time (minutes)</Label>
+                          <Input
+                            id="new-prep"
+                            name="prep_time_minutes"
+                            type="number"
+                            defaultValue="15"
+                          />
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <Label htmlFor="new-description">Description</Label>
+                          <Textarea
+                            id="new-description"
+                            name="description"
+                            placeholder="Short description shown to customers"
+                            rows={2}
+                          />
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <CloudinaryImageUpload
+                            label="Product image"
+                            context="product"
+                            value={newProductImageUrl}
+                            onChange={setNewProductImageUrl}
+                            previewAspect="square"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setNewProductImageUrl(randomProductImage())}
+                          >
+                            <ImagePlus className="mr-1 size-3.5" /> Use placeholder image
+                          </Button>
+                        </div>
+                        <DialogFooter className="sm:col-span-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setAddProductOpen(false)}
+                          >
+                            Cancel
+                          </Button>
+                          <Button type="submit" disabled={itemMutation.isPending} className="gap-2">
+                            {itemMutation.isPending ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <Plus className="size-4" />
+                            )}
+                            Create product
+                          </Button>
+                        </DialogFooter>
+                      </form>
+                    </DialogContent>
+                  </Dialog>
+                )}
+              </div>
+
+              {/* Products tab */}
+              <TabsContent value="products" className="mt-4 space-y-4">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <CardTitle className="text-base">Product catalogue</CardTitle>
+                        <CardDescription>
+                          {filteredItems.length === items.length
+                            ? `${items.length} products organised by category`
+                            : `Showing ${filteredItems.length} of ${items.length} products`}
+                        </CardDescription>
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                          <Input
+                            placeholder="Search products…"
+                            value={productSearch}
+                            onChange={(e) => setProductSearch(e.target.value)}
+                            className="h-9 w-full pl-8 sm:w-52"
+                          />
+                        </div>
+                        <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                          <SelectTrigger className="h-9 w-full sm:w-44">
+                            <SelectValue placeholder="All categories" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All categories</SelectItem>
+                            <SelectItem value="uncategorized">Uncategorised</SelectItem>
+                            {sortedCategories.map((c) => (
+                              <SelectItem key={c.id} value={c.id}>
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {items.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-16 text-center">
+                        <Package className="mb-3 size-10 text-muted-foreground/50" />
+                        <p className="text-sm font-medium">No products yet</p>
+                        <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                          {canManage
+                            ? "Click \"Add product\" to create your first menu item."
+                            : "This restaurant has no menu items yet."}
+                        </p>
+                        {canManage && (
+                          <Button
+                            className="mt-4 gap-2"
+                            size="sm"
+                            onClick={() => setAddProductOpen(true)}
+                          >
+                            <Plus className="size-4" />
+                            Add your first product
+                          </Button>
+                        )}
+                      </div>
+                    ) : filteredItems.length === 0 ? (
+                      <div className="py-12 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          No products match your search. Try a different term or filter.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-6">
+                        {productGroups.map((group) => (
+                          <div key={group.id}>
+                            <div className="mb-3 flex items-center gap-2">
+                              <FolderOpen className="size-4 text-muted-foreground" />
+                              <h3 className="text-sm font-semibold">{group.name}</h3>
+                              <Badge variant="secondary" className="text-xs">
+                                {group.items.length}
+                              </Badge>
+                            </div>
+                            <Accordion type="multiple" className="w-full">
+                              {group.items.map((item) => renderProductAccordionItem(item))}
+                            </Accordion>
+                            {group.id !== productGroups[productGroups.length - 1]?.id && (
+                              <Separator className="mt-6" />
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </CardContent>
                 </Card>
-              </div>
-            </div>
+              </TabsContent>
+
+              {/* Menu structure tab */}
+              <TabsContent value="structure" className="mt-4">
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <FolderOpen className="size-4" />
+                        Categories
+                      </CardTitle>
+                      <CardDescription>
+                        Organise products into groups shown on the customer menu.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {canManage && (
+                        <form
+                          className="flex gap-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            const form = new FormData(event.currentTarget);
+                            categoryMutation.mutate({
+                              restaurant_id: restaurantId,
+                              name: String(form.get("name")),
+                              sort_order: categories.length,
+                            });
+                            event.currentTarget.reset();
+                          }}
+                        >
+                          <Input
+                            name="name"
+                            placeholder="New category name"
+                            required
+                            className="h-9"
+                          />
+                          <Button
+                            type="submit"
+                            size="icon"
+                            aria-label="Add category"
+                            disabled={categoryMutation.isPending}
+                          >
+                            {categoryMutation.isPending ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <Plus className="size-4" />
+                            )}
+                          </Button>
+                        </form>
+                      )}
+                      {categories.length === 0 ? (
+                        <div className="rounded-lg border border-dashed py-8 text-center">
+                          <FolderOpen className="mx-auto mb-2 size-8 text-muted-foreground/40" />
+                          <p className="text-sm text-muted-foreground">
+                            No categories yet. Add one to organise your menu.
+                          </p>
+                        </div>
+                      ) : (
+                        sortedCategories.map((category) => (
+                          <div
+                            key={category.id}
+                            className="flex items-center justify-between rounded-lg border px-3 py-2.5 transition-colors hover:bg-muted/30"
+                          >
+                            <div>
+                              <p className="text-sm font-medium">{category.name}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {items.filter((i) => i.category_id === category.id).length} products
+                              </p>
+                            </div>
+                            {canManage && (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-8"
+                                onClick={() =>
+                                  setPendingDelete({
+                                    kind: "category",
+                                    id: category.id,
+                                    label: category.name,
+                                  })
+                                }
+                              >
+                                <Trash2 className="size-4 text-destructive" />
+                              </Button>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <SlidersHorizontal className="size-4" />
+                        Modifier groups
+                      </CardTitle>
+                      <CardDescription>
+                        Customisation options like size, spice level, or extras — assign to
+                        products on the Products tab.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {modifiers.length === 0 ? (
+                        <div className="rounded-lg border border-dashed py-8 text-center">
+                          <SlidersHorizontal className="mx-auto mb-2 size-8 text-muted-foreground/40" />
+                          <p className="text-sm text-muted-foreground">
+                            No modifier groups yet. Create one below.
+                          </p>
+                        </div>
+                      ) : (
+                        modifiers.map((modifier) => (
+                          <div
+                            key={modifier.id}
+                            className="rounded-lg border px-3 py-2.5 transition-colors hover:bg-muted/30"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="text-sm font-medium">{modifier.name}</p>
+                                  <Badge variant="outline" className="text-[10px]">
+                                    {modifier.type === "option" ? "Required" : "Optional"}
+                                  </Badge>
+                                </div>
+                                <p className="mt-0.5 text-xs text-muted-foreground">
+                                  {modifier.choices.length} choices · pick{" "}
+                                  {modifier.min_selections}–{modifier.max_selections}
+                                </p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  {modifier.choices.map((c) => c.label).join(" · ")}
+                                </p>
+                              </div>
+                              {canManage && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-8 shrink-0"
+                                  onClick={() =>
+                                    setPendingDelete({
+                                      kind: "modifier",
+                                      id: modifier.id,
+                                      label: modifier.name,
+                                    })
+                                  }
+                                >
+                                  <Trash2 className="size-4 text-destructive" />
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                      {canManage && (
+                        <>
+                          <Separator />
+                          <form
+                            className="space-y-3 rounded-lg border border-dashed p-4"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              const form = new FormData(event.currentTarget);
+                              const includePricing = form.get("include_pricing") === "on";
+                              const choiceLabels = String(form.get("choices") ?? "")
+                                .split(",")
+                                .map((s) => s.trim())
+                                .filter(Boolean);
+                              if (choiceLabels.length === 0) {
+                                toast.error("Enter at least one choice (comma-separated).");
+                                return;
+                              }
+                              modifierMutation.mutate({
+                                restaurant_id: restaurantId,
+                                name: String(form.get("name")),
+                                type: newModifierType,
+                                include_pricing: includePricing,
+                                required: newModifierType === "option",
+                                min_selections: newModifierType === "option" ? 1 : 0,
+                                max_selections: newModifierType === "option" ? 1 : 3,
+                                choices: choiceLabels.map((label) => ({ label, price: 0 })),
+                              });
+                              event.currentTarget.reset();
+                              setNewModifierType("option");
+                            }}
+                          >
+                            <p className="text-sm font-medium">New modifier group</p>
+                            <div className="space-y-1.5">
+                              <Label htmlFor="mod-name">Group name</Label>
+                              <Input
+                                id="mod-name"
+                                name="name"
+                                placeholder="e.g. Spice level"
+                                required
+                                className="h-9"
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label>Type</Label>
+                              <Select
+                                value={newModifierType}
+                                onValueChange={(v) =>
+                                  setNewModifierType(v as "option" | "extra")
+                                }
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="option">
+                                    Option — customer must pick one
+                                  </SelectItem>
+                                  <SelectItem value="extra">
+                                    Extra — optional, multiple allowed
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label htmlFor="mod-choices">Choices</Label>
+                              <Input
+                                id="mod-choices"
+                                name="choices"
+                                placeholder="Mild, Medium, Hot"
+                                required
+                                className="h-9"
+                              />
+                              <p className="text-[11px] text-muted-foreground">
+                                Separate choices with commas
+                              </p>
+                            </div>
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Checkbox name="include_pricing" />
+                              Allow custom pricing per choice
+                            </label>
+                            <Button
+                              type="submit"
+                              size="sm"
+                              disabled={modifierMutation.isPending}
+                              className="w-full gap-2"
+                            >
+                              {modifierMutation.isPending ? (
+                                <Loader2 className="size-4 animate-spin" />
+                              ) : (
+                                <Plus className="size-4" />
+                              )}
+                              Add modifier group
+                            </Button>
+                          </form>
+                        </>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+            </Tabs>
+
+            <AlertDialog
+              open={!!pendingDelete}
+              onOpenChange={(open) => !open && setPendingDelete(null)}
+            >
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Delete{" "}
+                    {pendingDelete?.kind === "category"
+                      ? "category"
+                      : pendingDelete?.kind === "product"
+                        ? "product"
+                        : pendingDelete?.kind === "modifier"
+                          ? "modifier group"
+                          : pendingDelete?.kind === "variant"
+                            ? "variant"
+                            : "add-on"}
+                    ?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {pendingDelete?.kind === "category"
+                      ? `"${pendingDelete.label}" will be removed. Products in this category will become uncategorised.`
+                      : pendingDelete?.kind === "product"
+                        ? `"${pendingDelete?.label}" and all its variants, add-ons, and modifier assignments will be permanently removed.`
+                        : `"${pendingDelete?.label}" will be permanently removed. This action cannot be undone.`}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={handleConfirmDelete}
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         );
       }}
