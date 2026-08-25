@@ -1,0 +1,184 @@
+rules_version = '2';
+
+// Cloud Firestore rules for ForkFleet (project e-comm-bd997).
+//
+// Deploy with:  firebase deploy --only firestore
+//
+// Model mirrors database.rules.json (Realtime Database):
+//   - staffUsers carry a roles map; super_admin / platform_admin /
+//     operations_manager are platform administrators.
+//   - restaurantUsers carry restaurant_id + permissions map
+//     (dots encoded as underscores, e.g. rm_support_view).
+//   - Customer-app identities are not modelled here yet — until the customer
+//     app migrates off the Realtime Database, its Firestore access must be
+//     added explicitly before locking these rules down further.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    function staffDoc() {
+      return get(/databases/$(database)/documents/staffUsers/$(request.auth.uid)).data;
+    }
+    function isStaff() {
+      return signedIn() && exists(/databases/$(database)/documents/staffUsers/$(request.auth.uid));
+    }
+    function hasStaffRole(role) {
+      return isStaff() && staffDoc().roles[role] == true;
+    }
+    function isPlatformAdmin() {
+      return hasStaffRole('super_admin')
+        || hasStaffRole('platform_admin')
+        || hasStaffRole('operations_manager');
+    }
+
+    function rmUserDoc() {
+      return get(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid)).data;
+    }
+    function isRmUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid))
+        && rmUserDoc().status == 'active';
+    }
+    function rmHasPerm(perm) {
+      return isRmUser() && rmUserDoc().permissions[perm] == true;
+    }
+    function rmRestaurantId() {
+      return isRmUser() ? rmUserDoc().restaurant_id : '__none__';
+    }
+
+    // ------------------------------------------------------------ accounts
+
+    match /staffUsers/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isPlatformAdmin());
+      allow list: if isPlatformAdmin();
+      allow create, update: if isPlatformAdmin();
+      allow delete: if false;
+    }
+
+    match /{col}Audit/{id}
+      where col in ['staffAudit', 'restaurantUserAudit', 'settingsAudit', 'notificationAudit'] {
+      allow read: if isPlatformAdmin();
+      allow create: if isStaff() || isRmUser();
+      allow update, delete: if false;
+    }
+
+    match /restaurantUsers/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isPlatformAdmin());
+      allow list: if isPlatformAdmin();
+      // Provisioning writes the profile while the NEW user is authenticated on
+      // a secondary app (self-create), mirroring the RTDB rule.
+      allow create: if isPlatformAdmin()
+        || (request.auth.uid == uid
+            && request.resource.data.uid == request.auth.uid);
+      allow update: if isPlatformAdmin();
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------------- restaurants
+
+    match /restaurants/{rid} {
+      allow read: if true; // public menu/checkout data lives on the document
+      allow create, update: if isPlatformAdmin() || rmHasPerm('rm_profile_manage');
+      allow delete: if false;
+    }
+
+    match /restaurantBranches/{docId} {
+      allow read: if true;
+      allow write: if isPlatformAdmin() || rmHasPerm('rm_profile_manage');
+    }
+
+    // ----------------------------------------------------------------- menus
+
+    match /menus/{rid} {
+      allow read: if true;
+      allow write: if isPlatformAdmin() || (rmHasPerm('rm_menu_view') && rmRestaurantId() == rid);
+    }
+
+    // ---------------------------------------------------------------- orders
+
+    match /orders/{oid} {
+      allow read: if isPlatformAdmin()
+        || (rmHasPerm('rm_orders_view') && resource.data.restaurant_id == rmRestaurantId());
+      allow update: if isPlatformAdmin() || rmHasPerm('rm_orders_manage');
+      allow create, delete: if false;
+    }
+
+    // --------------------------------------------------------------- drivers
+
+    match /drivers/{did} {
+      allow read: if isPlatformAdmin() || rmHasPerm('rm_drivers_view') || rmHasPerm('rm_delivery_view');
+      allow update: if isPlatformAdmin();
+      allow create, delete: if false;
+    }
+
+    match /driverAssignments/{key} {
+      allow read: if isPlatformAdmin() || rmHasPerm('rm_delivery_view') || rmHasPerm('rm_drivers_view');
+      allow create, update: if isPlatformAdmin() || rmHasPerm('rm_delivery_manage');
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------- promotions
+
+    match /promotions/{document=**} {
+      allow read: if true;
+      allow write: if isPlatformAdmin() || rmHasPerm('rm_promotions_view');
+    }
+
+    // ---------------------------------------------------------- notifications
+
+    match /notificationAlerts/{id} {
+      allow read: if isStaff();
+      allow write: if isPlatformAdmin();
+    }
+    match /notificationTriggers/{id} {
+      allow read: if isStaff();
+      allow write: if isPlatformAdmin();
+    }
+    match /notificationReads/{alertId}/{docId} {
+      allow read, write: if isStaff();
+    }
+
+    // --------------------------------------------------------------- settings
+
+    match /settings/{section} {
+      allow read: if isStaff() || isRmUser();
+      allow write: if isPlatformAdmin();
+    }
+
+    match /uploads/images/{id} {
+      allow create: if signedIn();
+      allow read: if signedIn();
+      allow update, delete: if false;
+    }
+
+    // ------------------------------------------------------- support tickets
+
+    function canViewSupport() {
+      return isPlatformAdmin() || hasStaffRole('customer_support') || rmHasPerm('rm_support_view');
+    }
+    function canManageSupport() {
+      return isPlatformAdmin() || hasStaffRole('customer_support');
+    }
+
+    match /tickets/{tid} {
+      allow read: if canViewSupport()
+        || (rmHasPerm('rm_support_view') && resource.data.restaurant_id == rmRestaurantId());
+      allow create: if isPlatformAdmin();
+      allow update: if canManageSupport()
+        || (rmHasPerm('rm_support_manage') && resource.data.restaurant_id == rmRestaurantId());
+      allow delete: if false;
+
+      match /messages/{mid} {
+        allow read: if canViewSupport()
+          || (rmHasPerm('rm_support_view')
+              && get(/databases/$(database)/documents/tickets/$(tid)).data.restaurant_id == rmRestaurantId());
+        allow create, update: if canManageSupport()
+          || (rmHasPerm('rm_support_manage')
+              && get(/databases/$(database)/documents/tickets/$(tid)).data.restaurant_id == rmRestaurantId());
+        allow delete: if false;
+      }
+    }
+  }
+}
