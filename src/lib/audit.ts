@@ -1,7 +1,7 @@
-import { logAudit, profiles } from "@/lib/demo-store";
-import { getDemoUserId } from "@/lib/session.functions";
+import { logAudit } from "@/lib/demo-store";
+import { readStoredFirebaseSession } from "@/lib/session.functions";
 
-/** Small wrapper that resolves the current demo actor email before logging. */
+/** Small wrapper that resolves the signed-in operator's email before logging. */
 export function audit(
   entry: {
     action: string;
@@ -11,14 +11,13 @@ export function audit(
     after?: Record<string, string | number | boolean | null> | null;
   },
 ) {
-  const userId = getDemoUserId();
-  const profile = profiles.find((p) => p.user_id === userId);
+  const session = readStoredFirebaseSession();
   return logAudit({
     action: entry.action,
     entityType: entry.entityType,
     entityId: entry.entityId ?? null,
     before: entry.before ?? null,
     after: entry.after ?? null,
-    actorEmail: profile?.email ?? null,
+    actorEmail: session?.email ?? null,
   });
 }

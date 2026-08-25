@@ -38,7 +38,11 @@ import { useTheme } from "@/hooks/use-theme";
 import { useServerFn } from "@/lib/use-demo-fn";
 import { useStaffSession } from "@/hooks/use-staff-session";
 import { useInAppAlerts } from "@/hooks/use-in-app-alerts";
-import { signOutDemo, isDemoSignedIn } from "@/lib/session.functions";
+import {
+  clearStoredFirebaseSession,
+  isSignedInLocally,
+} from "@/lib/session.functions";
+import { signOutFirebaseAuth } from "@/lib/auth.firebase";
 import { useFirebaseOrderSync } from "@/hooks/use-firebase-orders";
 
 const roleLabel = (role: string) => role.replace(/_/g, " ");
@@ -122,7 +126,7 @@ export function AppShell({
 
   // Redirect to /auth if we're definitely signed out (only after the query settles)
   useEffect(() => {
-    if (!staff.isLoading && !staff.isFetching && !isDemoSignedIn()) {
+    if (!staff.isLoading && !staff.isFetching && !isSignedInLocally()) {
       void navigate({ to: "/auth", replace: true });
     }
   }, [staff.isLoading, staff.isFetching, navigate]);
@@ -139,7 +143,8 @@ export function AppShell({
 
   async function signOut() {
     await queryClient.cancelQueries();
-    signOutDemo();
+    clearStoredFirebaseSession();
+    await signOutFirebaseAuth().catch(() => {});
     queryClient.clear();
     navigate({ to: "/auth", replace: true });
   }

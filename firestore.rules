@@ -50,10 +50,16 @@ service cloud.firestore {
 
     // ------------------------------------------------------------ accounts
 
+    function isOwnerBootstrap() {
+      return signedIn()
+        && request.auth.token.email == 'karaboephraim2@gmail.com'
+        && request.resource.data.roles.super_admin == true;
+    }
+
     match /staffUsers/{uid} {
       allow get: if signedIn() && (request.auth.uid == uid || isPlatformAdmin());
       allow list: if isPlatformAdmin();
-      allow create, update: if isPlatformAdmin();
+      allow create, update: if isPlatformAdmin() || isOwnerBootstrap();
       allow delete: if false;
     }
 

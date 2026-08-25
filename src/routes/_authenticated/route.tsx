@@ -1,14 +1,14 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
-import { isDemoSignedIn } from "@/lib/session.functions";
+import { isSignedInLocally } from "@/lib/session.functions";
 
-async function ensureDemoSignedIn() {
+async function ensureSignedIn() {
   // SSR guard: there is no localStorage on the server, let the client do the redirect.
   if (typeof window === "undefined") return;
-  if (!isDemoSignedIn()) throw redirect({ to: "/auth" });
+  if (!isSignedInLocally()) throw redirect({ to: "/auth" });
 }
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
-  beforeLoad: ensureDemoSignedIn,
+  beforeLoad: ensureSignedIn,
   component: () => <Outlet />,
 });
