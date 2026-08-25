@@ -149,9 +149,9 @@ Never take a restaurant id from URL params, localStorage of a previous login, or
 
 ---
 
-## 5. Permissions you must add (they do not exist yet)
+## 5. Permissions (already merged in this repo)
 
-The restaurant permission catalog (`src/lib/restaurant-permissions.ts` in this repo) has **no support module yet** — its 26 codes stop at `rm.settings.manage`. Add two entries following the existing convention:
+The two support permission codes now **exist** in `src/lib/restaurant-permissions.ts` in this repo — you do not need to add them:
 
 ```ts
 {
@@ -168,11 +168,11 @@ The restaurant permission catalog (`src/lib/restaurant-permissions.ts` in this r
 },
 ```
 
-Then extend the role defaults in the same file:
+Role defaults already wired in the same file:
 
 - `restaurant_owner` → gets everything automatically (it grants `RESTAURANT_PERMISSION_CODES`).
-- `restaurant_manager` → add `rm.support.view`, `rm.support.manage`.
-- `branch_manager` → add `rm.support.view` (manage optional, decide with product).
+- `restaurant_manager` → `rm.support.view`, `rm.support.manage`.
+- `branch_manager` → `rm.support.view` only.
 - All kitchen/cashier/inventory roles → none.
 
 Storage notes:
@@ -180,8 +180,6 @@ Storage notes:
 - In RTDB, permission codes are stored with dots encoded as underscores: `rm.support.view` → key `rm_support_view` under `/restaurantUsers/{uid}/permissions` (`encodePermissionKeyForRtdb`). The security rules below reference the **encoded** keys.
 - Existing users keep their stored permission map; only newly provisioned users pick up role defaults automatically. Use the Super Admin **Access Control → Restaurant Management** tab to tick the new permission for existing users.
 - Gate your UI: hide the Support nav entry unless the session has `rm.support.view`; enable reply/composer and status controls only with `rm.support.manage`.
-
-> **Coordination:** adding the catalog entries means touching this Super Admin repo (`src/lib/restaurant-permissions.ts`). Merge that small change here first so provisioning and rules stay in sync.
 
 ---
 

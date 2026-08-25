@@ -175,6 +175,18 @@ export const RESTAURANT_PERMISSIONS: RestaurantPermission[] = [
     actions: ["view"],
   },
   {
+    code: "rm.support.view",
+    module: "support",
+    description: "View support inquiries for this restaurant",
+    actions: ["view"],
+  },
+  {
+    code: "rm.support.manage",
+    module: "support",
+    description: "Reply to and resolve support inquiries for this restaurant",
+    actions: ["edit", "manage"],
+  },
+  {
     code: "rm.settings.view",
     module: "settings",
     description: "View restaurant settings",
@@ -223,6 +235,8 @@ grant("restaurant_manager", [
   "rm.drivers.view",
   "rm.promotions.view",
   "rm.reports.view",
+  "rm.support.view",
+  "rm.support.manage",
   "rm.settings.view",
 ]);
 grant("branch_manager", [
@@ -237,6 +251,7 @@ grant("branch_manager", [
   "rm.customers.view",
   "rm.inventory.view",
   "rm.reports.view",
+  "rm.support.view",
 ]);
 grant("kitchen_manager", [
   "rm.orders.view",
@@ -297,7 +312,7 @@ export function decodePermissionKeyFromRtdb(key: string): string {
 /** Returns true when every key is safe for Firebase RTDB object maps. */
 export function isRtdbSafePermissionMap(map: Record<string, boolean>): boolean {
   return Object.keys(map).every(
-    (key) => key.length > 0 && !/[.#$/\[\]]/.test(key),
+    (key) => key.length > 0 && !/[.#$/[\]]/.test(key),
   );
 }
 
