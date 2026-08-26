@@ -61,11 +61,6 @@ const STAFF_AUDIT_PATH = "staffAudit";
 const PROVISIONER_APP_NAME = "forkfleet-provisioner";
 const MAIN_APP_NAME = "forkfleet-main";
 
-/** Platform owner: this account always bootstraps itself to full access on
- *  sign-in — the staffUsers profile is created automatically if missing, and
- *  a missing doc is self-healed on session refresh. Matched by firestore.rules. */
-export const OWNER_EMAIL = "karaboephraim2@gmail.com";
-
 const nowIso = () => new Date().toISOString();
 
 type FirebaseApp = Awaited<ReturnType<typeof import("firebase/app").initializeApp>>;
@@ -424,31 +419,10 @@ export type StaffSignInResult =
       message: string;
     };
 
-const isOwner = (email: string): boolean => email.trim().toLowerCase() === OWNER_EMAIL;
-
-/** Writes (or repairs) the platform owner's full-access staffUsers profile. */
-async function writeOwnerProfile(uid: string, email: string): Promise<void> {
-  await rtdbSet(`${STAFF_USERS_PATH}/${uid}`, {
-    uid,
-    email,
-    full_name: "Karabo Ephraim",
-    job_title: "Platform Owner",
-    roles: { super_admin: true },
-    status: "active",
-    is_deleted: false,
-    created_at: nowIso(),
-    created_by: "owner-bootstrap",
-    last_login_at: nowIso(),
-  });
-}
-
 /**
  * Signs a staff member in with Firebase Auth and resolves their console session
- * from staffUsers/{uid}. Rejects accounts that were never provisioned through
- * Access Control, and suspended accounts. The platform owner account
- * (${OWNER_EMAIL}) is bootstrapped automatically: if the Auth account does not
- * exist yet it is created with the entered password, and a missing console
- * profile is created with full access.
+ * from /staffUsers/{uid}. Rejects accounts that were never provisioned through
+ * Access Control, and suspended accounts.
  */
 export async function signInStaffWithFirebase(input: {
   email: string;
@@ -462,48 +436,16 @@ export async function signInStaffWithFirebase(input: {
     };
   }
   const email = input.email.trim().toLowerCase();
-  const owner = isOwner(email);
   try {
-    const { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } = await import(
-      "firebase/auth"
-    );
+    const { getAuth, signInWithEmailAndPassword, signOut } = await import("firebase/auth");
     const auth = getAuth(await getMainApp());
-    let uid: string;
-    try {
-      const credential = await signInWithEmailAndPassword(auth, email, input.password);
-      uid = credential.user.uid;
-    } catch (signInErr) {
-      const code = (signInErr as { code?: string } | null)?.code ?? "";
-      const recoverable =
-        code === "auth/user-not-found" ||
-        code === "auth/invalid-credential" ||
-        code === "auth/invalid-login-credentials";
-      if (!owner || !recoverable) {
-        return { ok: false, error: "invalid_credentials", message: friendlyAuthError(signInErr) };
-      }
-      // Owner first-run bootstrap: create the Auth account with the typed password.
-      // If the account already exists the password was simply wrong.
-      try {
-        const created = await createUserWithEmailAndPassword(auth, email, input.password);
-        uid = created.user.uid;
-      } catch (createErr) {
-        return { ok: false, error: "invalid_credentials", message: friendlyAuthError(createErr) };
-      }
-    }
-
-    let record = normalizeStaffUser(
+    const credential = await signInWithEmailAndPassword(auth, email, input.password);
+    const uid = credential.user.uid;
+    const record = normalizeStaffUser(
       await rtdbGet<StaffUserRaw>(`${STAFF_USERS_PATH}/${uid}`),
       uid,
     );
-    if (!record && owner) {
-      await writeOwnerProfile(uid, email);
-      record = normalizeStaffUser(
-        await rtdbGet<StaffUserRaw>(`${STAFF_USERS_PATH}/${uid}`),
-        uid,
-      );
-    }
     if (!record) {
-      const { signOut } = await import("firebase/auth");
       await signOut(auth);
       return {
         ok: false,
@@ -513,7 +455,6 @@ export async function signInStaffWithFirebase(input: {
       };
     }
     if (record.status === "suspended") {
-      const { signOut } = await import("firebase/auth");
       await signOut(auth);
       return {
         ok: false,
@@ -527,7 +468,6 @@ export async function signInStaffWithFirebase(input: {
       fullName: record.full_name || null,
       jobTitle: record.job_title,
       roles: record.roles,
-      grantAll: owner || record.roles.includes("super_admin"),
     });
     await rtdbUpdate(`${STAFF_USERS_PATH}/${uid}`, { last_login_at: nowIso() }).catch(() => {});
     await writeStaffAudit({
@@ -544,23 +484,14 @@ export async function signInStaffWithFirebase(input: {
 
 /** Re-reads a stored Firebase session from the database so revoked roles and
  *  suspensions take effect without waiting for a fresh sign-in. Returns null
- *  when access was revoked (profile gone or suspended). The owner profile is
- *  self-healed when missing. */
+ *  when access was revoked (profile gone or suspended). */
 export async function refreshFirebaseSession(stored: StaffSession): Promise<StaffSession | null> {
   if (!isFirebaseAvailable()) return stored;
-  const owner = isOwner(stored.email);
   try {
-    let record = normalizeStaffUser(
+    const record = normalizeStaffUser(
       await rtdbGet<StaffUserRaw>(`${STAFF_USERS_PATH}/${stored.userId}`),
       stored.userId,
     );
-    if (!record && owner) {
-      await writeOwnerProfile(stored.userId, stored.email);
-      record = normalizeStaffUser(
-        await rtdbGet<StaffUserRaw>(`${STAFF_USERS_PATH}/${stored.userId}`),
-        stored.userId,
-      );
-    }
     if (!record || record.status === "suspended") return null;
     return buildSessionForRoles({
       userId: record.uid,
@@ -568,7 +499,6 @@ export async function refreshFirebaseSession(stored: StaffSession): Promise<Staf
       fullName: record.full_name || null,
       jobTitle: record.job_title,
       roles: record.roles,
-      grantAll: owner || record.roles.includes("super_admin"),
     });
   } catch {
     return stored; // database unreachable — keep the cached session rather than locking the operator out

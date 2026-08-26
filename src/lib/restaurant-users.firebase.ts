@@ -141,7 +141,7 @@ async function writeRestaurantUserProfile(
   record: RestaurantUserRecord,
 ): Promise<void> {
   const raw = toRawRestaurantUser(record);
-  const permMap = raw["permissions"] as Record<string, boolean>;
+  const permMap = raw.permissions as Record<string, boolean>;
   if (!isRtdbSafePermissionMap(permMap)) {
     throw new Error("Permission map contains invalid RTDB keys.");
   }

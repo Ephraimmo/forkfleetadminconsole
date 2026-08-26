@@ -1,16 +1,24 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Loader2, ShieldCheck, UtensilsCrossed } from "lucide-react";
+import { Loader2, ShieldCheck, UtensilsCrossed, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { writeStoredFirebaseSession, type StaffSession } from "@/lib/session.functions";
+import {
+  DEMO_CREDENTIALS,
+  signInDemoWithCredentials,
+  signInDemoAs,
+  writeStoredFirebaseSession,
+  type DemoCredential,
+  type StaffSession,
+} from "@/lib/session.functions";
 import { signInStaffWithFirebase } from "@/lib/auth.firebase";
+import { profiles } from "@/lib/demo-store";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -42,6 +50,8 @@ function AuthPage() {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  const quickAccounts = useMemo<DemoCredential[]>(() => DEMO_CREDENTIALS, []);
+
   async function handleSignIn(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -55,17 +65,26 @@ function AuthPage() {
     }
     setErrors({});
     setBusy(true);
-    const result = await signInStaffWithFirebase(parsed.data);
+    const result = await signInDemoWithCredentials(parsed.data);
     setBusy(false);
     if (!result.ok) {
-      toast.error(result.message);
-      setErrors({ password: result.message });
+      toast.error("Invalid demo credentials. Try one of the quick accounts below.");
+      setErrors({ email: "No demo staff member matches those credentials." });
       return;
     }
-    const session: StaffSession = result.session;
-    writeStoredFirebaseSession(session);
     queryClient.invalidateQueries({ queryKey: ["staff-session"] });
-    toast.success(`Welcome back, ${session.fullName ?? session.email}`);
+    toast.success(`Welcome back, ${result.session?.fullName ?? "staff member"}`);
+    navigate({ to: "/dashboard", replace: true });
+  }
+
+  async function quickSignIn(cred: DemoCredential) {
+    setBusy(true);
+    const profile = profiles.find((p) => p.email === cred.email);
+    if (profile) signInDemoAs(profile.user_id);
+    queryClient.invalidateQueries({ queryKey: ["staff-session"] });
+    await new Promise((r) => setTimeout(r, 150));
+    setBusy(false);
+    toast.success(`Signed in as ${cred.label} (${cred.rolePreview})`);
     navigate({ to: "/dashboard", replace: true });
   }
 
@@ -85,11 +104,11 @@ function AuthPage() {
           </h2>
           <p className="text-sm text-muted-foreground">
             Restaurants, kitchens, dispatch, fleet, finance and support — one operations console,
-            permission-scoped roles, a full audit trail on every action.
+            fifteen permission-scoped roles, a full audit trail on every action.
           </p>
           <div className="flex items-center gap-2 rounded-md border border-border bg-card/60 p-3 text-xs text-muted-foreground">
             <ShieldCheck className="size-4 text-primary" />
-            Secured by Firebase Authentication. Access is provisioned per account.
+            Demo mode — sign in uses static staff accounts only. No Supabase calls are made.
           </div>
         </div>
         <p className="relative text-xs text-muted-foreground">
@@ -102,7 +121,8 @@ function AuthPage() {
           <CardHeader>
             <CardTitle className="text-xl">Staff access</CardTitle>
             <CardDescription>
-              Sign in with your ForkFleet console account to continue.
+              Sign in with your ForkFleet account. Password for the demo accounts below is{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">demo12345</code>.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -114,7 +134,7 @@ function AuthPage() {
                   name="email"
                   type="email"
                   autoComplete="email"
-                  placeholder="you@company.com"
+                  defaultValue="avery.cole@forkfleet.demo"
                   required
                 />
                 {errors["email"] && <p className="text-xs text-destructive">{errors["email"]}</p>}
@@ -126,6 +146,7 @@ function AuthPage() {
                   name="password"
                   type="password"
                   autoComplete="current-password"
+                  defaultValue="demo12345"
                   required
                 />
                 {errors["password"] && (
@@ -137,6 +158,36 @@ function AuthPage() {
                 Sign in
               </Button>
             </form>
+
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />
+              Demo accounts
+              <span className="h-px flex-1 bg-border" />
+            </div>
+
+            <div className="grid gap-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Users className="size-3.5" />
+                Pick a role to explore a permission-scoped view.
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {quickAccounts.map((acc) => (
+                  <Button
+                    key={acc.email}
+                    type="button"
+                    variant="outline"
+                    className="h-auto justify-start px-3 py-2 text-left"
+                    disabled={busy}
+                    onClick={() => void quickSignIn(acc)}
+                  >
+                    <span className="flex flex-col">
+                      <span className="text-sm font-medium">{acc.label}</span>
+                      <span className="text-[11px] text-muted-foreground">{acc.rolePreview}</span>
+                    </span>
+                  </Button>
+                ))}
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>

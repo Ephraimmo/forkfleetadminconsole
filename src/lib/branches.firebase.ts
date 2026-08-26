@@ -1,8 +1,4 @@
-// Restaurant branches (Cloud Firestore).
-//
-// Previously nested at /restaurantBranches/{restaurantId}/{branchId} in the
-// Realtime Database; now stored as ONE flat collection where each document id
-// is "{restaurantId}__{branchId}" and carries a restaurant_id field.
+// Restaurant branches live at /restaurantBranches/{restaurantId}/{branchId}.
 //
 // This is the authoritative branch registry written by the Restaurant App.
 // Driver assignments MUST be expanded against this list — reading a `branches`
@@ -37,44 +33,20 @@ function prettyName(id: string): string {
   return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-type FlatBranchMap = Record<string, Partial<RestaurantBranch> & { restaurant_id?: string }>;
-
-function splitBranchKey(docId: string): { rid: string; bid: string } {
-  const idx = docId.indexOf("__");
-  if (idx === -1) return { rid: "", bid: docId };
-  return { rid: docId.slice(0, idx), bid: docId.slice(idx + 2) };
-}
-
-/** Shape raw flat rows into per-restaurant sorted branch lists. */
-function shapeAll(flat: FlatBranchMap | null): Record<string, RestaurantBranch[]> {
-  const out: Record<string, RestaurantBranch[]> = {};
-  for (const [docId, b] of Object.entries(flat ?? {})) {
-    if (!b || typeof b !== "object") continue;
-    const { rid, bid } = splitBranchKey(docId);
-    const restaurantId = b.restaurant_id ?? rid;
-    if (!restaurantId) continue;
-    const list = out[restaurantId] ?? [];
-    list.push({
-      ...b,
-      id: b.id ?? bid,
-      restaurant_id: restaurantId,
-      name: b.name ?? prettyName(bid),
-    });
-    out[restaurantId] = list;
-  }
-  for (const list of Object.values(out)) {
-    list.sort(
-      (a, b) => Number(!!b.is_main) - Number(!!a.is_main) || a.name.localeCompare(b.name),
-    );
-  }
-  return out;
-}
-
-function filterByRestaurant(
-  all: Record<string, RestaurantBranch[]>,
+function toBranchList(
   restaurantId: string,
+  map: Record<string, Partial<RestaurantBranch>> | null,
 ): RestaurantBranch[] {
-  return all[restaurantId] ?? [];
+  if (!map) return [];
+  return Object.entries(map)
+    .filter(([, b]) => !!b && typeof b === "object")
+    .map(([key, b]) => ({
+      ...b,
+      id: b.id ?? key,
+      restaurant_id: b.restaurant_id ?? restaurantId,
+      name: b.name ?? prettyName(key),
+    }))
+    .sort((a, b) => Number(!!b.is_main) - Number(!!a.is_main) || a.name.localeCompare(b.name));
 }
 
 /** Live branch list for one restaurant. Empty when the restaurant has none. */
@@ -86,8 +58,9 @@ export function subscribeRestaurantBranches(
     cb([]);
     return () => {};
   }
-  return rtdbSubscribe<FlatBranchMap>(BRANCHES_PATH, (val) =>
-    cb(filterByRestaurant(shapeAll(val), restaurantId)),
+  return rtdbSubscribe<Record<string, Partial<RestaurantBranch>>>(
+    `${BRANCHES_PATH}/${restaurantId}`,
+    (val) => cb(toBranchList(restaurantId, val)),
   );
 }
 
@@ -99,12 +72,23 @@ export function subscribeAllBranches(
     cb({});
     return () => {};
   }
-  return rtdbSubscribe<FlatBranchMap>(BRANCHES_PATH, (val) => cb(shapeAll(val)));
+  return rtdbSubscribe<Record<string, Record<string, Partial<RestaurantBranch>>>>(
+    BRANCHES_PATH,
+    (val) => {
+      const out: Record<string, RestaurantBranch[]> = {};
+      for (const [rid, branches] of Object.entries(val ?? {})) {
+        out[rid] = toBranchList(rid, branches);
+      }
+      cb(out);
+    },
+  );
 }
 
 /** One-shot read of a restaurant's branches. */
 export async function listRestaurantBranches(restaurantId: string): Promise<RestaurantBranch[]> {
   if (!isFirebaseAvailable() || !restaurantId) return [];
-  const val = await rtdbGet<FlatBranchMap>(BRANCHES_PATH);
-  return filterByRestaurant(shapeAll(val), restaurantId);
+  const val = await rtdbGet<Record<string, Partial<RestaurantBranch>>>(
+    `${BRANCHES_PATH}/${restaurantId}`,
+  );
+  return toBranchList(restaurantId, val);
 }

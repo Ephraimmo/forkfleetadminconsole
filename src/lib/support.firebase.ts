@@ -1,24 +1,17 @@
-// Firebase-backed customer support desk (Cloud Firestore).
+// Firebase-backed customer support desk.
 //
-// Firestore layout (shared contract with the CUSTOMER APP):
-//   tickets/{ticketId}                        -> SupportTicket
-//   tickets/{ticketId}/messages/{messageId}   -> SupportMessage
+// Realtime Database layout (shared with the CUSTOMER APP):
+//   /support/tickets/{ticketId}                 -> SupportTicket
+//   /support/messages/{ticketId}/{messageId}    -> SupportMessage
+//   /support/presence/agents/{agentId}          -> AgentPresence
 //
 // The customer app WRITES tickets + customer messages and READS agent
 // replies/status. This console READS everything and writes agent replies,
 // status/priority/assignment changes. See
 // docs/CUSTOMER_APP_SUPPORT_INTEGRATION.md for the contract.
 
-import {
-  fsSubscribeCollection,
-  fsWriteDocument,
-  isFirebaseAvailable,
-  rtdbGet,
-  rtdbSet,
-  rtdbSubscribe,
-  rtdbUpdate,
-  type RTDBValue,
-} from "@/lib/firebase";
+import { isFirebaseAvailable, rtdbGet, rtdbSet, rtdbSubscribe, rtdbUpdate } from "@/lib/firebase";
+import type { RTDBValue } from "@/lib/firebase";
 
 export type SupportChannel = "chat" | "email" | "phone" | "in_app";
 export type SupportStatus = "open" | "in_progress" | "waiting" | "resolved";
@@ -68,12 +61,8 @@ export const SUPPORT_CHANNEL_LABEL: Record<SupportChannel, string> = {
   in_app: "In-app",
 };
 
-const TICKETS = "tickets";
-const MESSAGES = "messages";
-
-function messagesPath(ticketId: string): string {
-  return `${TICKETS}/${ticketId}/${MESSAGES}`;
-}
+const TICKETS = "support/tickets";
+const MESSAGES = "support/messages";
 
 function newId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -140,8 +129,8 @@ export function subscribeTicketMessages(
     cb([]);
     return () => {};
   }
-  return fsSubscribeCollection<Record<string, Partial<SupportMessage>> | null>(
-    messagesPath(ticketId),
+  return rtdbSubscribe<Record<string, Partial<SupportMessage>> | null>(
+    `${MESSAGES}/${ticketId}`,
     (raw) => {
       const list = Object.entries(raw ?? {})
         .map(([id, m]) => ({
@@ -182,10 +171,7 @@ export async function sendAgentReply(input: {
     attachment_url: null,
     at,
   };
-  await fsWriteDocument(
-    messagesPath(input.ticket_id),
-    message as unknown as Record<string, unknown>,
-  );
+  await rtdbSet(`${MESSAGES}/${input.ticket_id}/${id}`, message as unknown as RTDBValue);
   const existing = await rtdbGet<Partial<SupportTicket>>(`${TICKETS}/${input.ticket_id}`);
   await rtdbUpdate(`${TICKETS}/${input.ticket_id}`, {
     last_message: body.slice(0, 160),
@@ -268,7 +254,7 @@ export async function createSupportTicket(input: {
   await rtdbSet(`${TICKETS}/${id}`, ticket as unknown as RTDBValue);
   if (body) {
     const mid = newId("msg");
-    await fsWriteDocument(messagesPath(id), {
+    await rtdbSet(`${MESSAGES}/${id}/${mid}`, {
       id: mid,
       ticket_id: id,
       from: "customer",
@@ -277,7 +263,7 @@ export async function createSupportTicket(input: {
       body,
       attachment_url: null,
       at,
-    } as unknown as Record<string, unknown>);
+    } as unknown as RTDBValue);
   }
   return ticket;
 }

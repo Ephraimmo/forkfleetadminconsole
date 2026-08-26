@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@/lib/use-demo-fn";
 import {
+  buildDemoSessionSync,
   getStaffSession,
-  getStoredSessionSync,
-  isSignedInLocally,
+  isDemoSignedIn,
   type StaffRole,
   type StaffSession,
 } from "@/lib/session.functions";
@@ -11,11 +11,11 @@ import {
 export function useStaffSession() {
   const fetchSession = useServerFn(getStaffSession);
 
-  // Synchronously preload a cached session when one is already stored in
+  // Synchronously preload a session when demo sign-in is already recorded in
   // localStorage so the sidebar/topbar never render an empty permissions set
   // before the async query resolves.
   const initial: StaffSession | null =
-    typeof window !== "undefined" && isSignedInLocally() ? getStoredSessionSync() : null;
+    typeof window !== "undefined" && isDemoSignedIn() ? buildDemoSessionSync() : null;
 
   const query = useQuery<StaffSession | null>({
     queryKey: ["staff-session"],

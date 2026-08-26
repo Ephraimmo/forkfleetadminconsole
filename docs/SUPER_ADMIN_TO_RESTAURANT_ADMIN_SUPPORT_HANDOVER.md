@@ -20,19 +20,16 @@ Related docs in this repo:
 | **ForkFleet Super Admin** (`forkfleetadminconsole`) | Platform help desk. Reads **all** tickets, replies, sets status/priority/assignment |
 | **Restaurant Admin** (your app) | NEW: reads **only** tickets where `restaurant_id` equals its user's assigned restaurant, and (optionally) replies/resolves them |
 
-### 1.1 CRITICAL: the data lives in Cloud Firestore
+### 1.1 CRITICAL: the data lives in Firebase Realtime Database — NOT Supabase
 
 There is **no** `tickets`, `support_tickets`, or `inquiries` table in Supabase. Do **not** look for one and do **not** create one. The Supabase schema in `supabase/migrations/` is unused for support.
 
-All apps (customer, restaurant admin, super admin) now read/write **Cloud Firestore** in project `e-comm-bd997`. The old Realtime Database nodes are legacy-only:
+All support data lives in the shared Firebase RTDB project `e-comm-bd997` (same database as the customer app and Super Admin):
 
 ```
-tickets/{ticketId}                        -> SupportTicket
-tickets/{ticketId}/messages/{messageId}   -> SupportMessage
-restaurantUsers/{uid}                     -> RestaurantUserSession profile
+/support/tickets/{ticketId}              -> SupportTicket
+/support/messages/{ticketId}/{messageId} -> SupportMessage
 ```
-
-Legacy RTDB data was copied across with the one-time script `npm run migrate:rtdb` (`scripts/migrate-rtdb-to-firestore.mjs`). Do not write to the old `/support/*` RTDB paths.
 
 ### 1.2 One user → one restaurant
 
@@ -105,8 +102,8 @@ visible(ticket, session)  ⇔  ticket.restaurant_id === session.restaurantId
 
 Implementation requirements:
 
-1. Subscribe to the `tickets` collection with Firestore `onSnapshot` for live updates (Super Admin helper equivalent: `subscribeSupportTickets()` in `src/lib/support.firebase.ts`).
-2. **Filter client-side** by `restaurant_id === session.restaurantId` (Firestore can filter `where("restaurant_id","==",id)` too — either is fine; client-side filtering mirrors the existing pattern used for orders in Restaurant Admin).
+1. Subscribe to `support/tickets` with RTDB `onValue` for live updates (Super Admin helper equivalent: `subscribeSupportTickets()` in `src/lib/support.firebase.ts`).
+2. **Filter client-side** by `restaurant_id === session.restaurantId`. RTDB cannot deep-filter nested fields server-side, and this mirrors the existing pattern used for orders in Restaurant Admin.
 3. Sort the filtered list by `(last_message_at ?? created_at)` descending — same as Super Admin's inbox.
 4. Never render, count, or act on tickets whose `restaurant_id` is `null` or belongs to another restaurant — including in badges/search.
 
@@ -117,14 +114,14 @@ export function subscribeRestaurantTickets(
   restaurantId: string,
   cb: (tickets: SupportTicket[]) => void,
 ): () => void {
-  return fsSubscribeCollection<Record<string, Partial<SupportTicket>> | null>(
-    "tickets",
+  return rtdbSubscribe<Record<string, Partial<SupportTicket>> | null>(
+    "support/tickets",
     (raw) => cb(toList(raw).filter((t) => t.restaurant_id === restaurantId)),
   );
 }
 ```
 
-Thread view: subscribe to the `tickets/{ticketId}/messages` subcollection, sort by `at` ascending, and re-check that the parent ticket passed your scoping filter before rendering.
+Thread view: subscribe to `support/messages/{ticketId}`, sort by `at` ascending, and re-check that the parent ticket passed your scoping filter before rendering.
 
 ---
 
@@ -180,28 +177,39 @@ Role defaults already wired in the same file:
 
 Storage notes:
 
-- In Firestore, permission codes stay encoded with dots as underscores: `rm.support.view` → key `rm_support_view` in the `permissions` map on the `restaurantUsers/{uid}` document (`encodePermissionKeyForRtdb`). The security rules reference the **encoded** keys.
+- In RTDB, permission codes are stored with dots encoded as underscores: `rm.support.view` → key `rm_support_view` under `/restaurantUsers/{uid}/permissions` (`encodePermissionKeyForRtdb`). The security rules below reference the **encoded** keys.
 - Existing users keep their stored permission map; only newly provisioned users pick up role defaults automatically. Use the Super Admin **Access Control → Restaurant Management** tab to tick the new permission for existing users.
 - Gate your UI: hide the Support nav entry unless the session has `rm.support.view`; enable reply/composer and status controls only with `rm.support.manage`.
 
 ---
 
-## 6. Security rules (Cloud Firestore)
+## 6. Firebase RTDB security rules to add
 
-Rules live in `firestore.rules` in this repo and are wired via `firebase.json`. Deploy with:
+`database.rules.json` currently has **no `/support` node**, and the root denies everything. Copy the established patterns (collection-permission reads like `promotions`/`settings`; per-record data-match writes like `orders`):
 
+```json
+"support": {
+  "tickets": {
+    ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('customer_support') || root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm_support_view').val() == true)",
+    "$ticketId": {
+      ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('customer_support') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm_support_manage').val() == true && data.exists() && data.child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val()))"
+    }
+  },
+  "messages": {
+    "$ticketId": {
+      ".read": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('customer_support') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm_support_view').val() == true && root.child('support').child('tickets').child($ticketId).child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val()))",
+      ".write": "auth != null && (root.child('staffUsers').child(auth.uid).child('roles').hasChild('super_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('platform_admin') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('operations_manager') || root.child('staffUsers').child(auth.uid).child('roles').hasChild('customer_support') || (root.child('restaurantUsers').child(auth.uid).child('permissions').child('rm_support_manage').val() == true && root.child('support').child('tickets').child($ticketId).child('restaurant_id').val() == root.child('restaurantUsers').child(auth.uid).child('restaurant_id').val()))"
+    }
+  }
+}
 ```
-firebase deploy --only firestore
-```
 
-The support section already covers restaurant admins: reads on `tickets` require `rm_support_view` (or a platform staff role) and writes require `rm_support_manage` **plus** `resource.data.restaurant_id == rmRestaurantId()`; the `tickets/{tid}/messages` subcollection re-checks the parent ticket's `restaurant_id` via `get()`. If your app ships its own rules file, copy those clauses.
+Design notes and warnings — read carefully:
 
-Design notes:
-
-1. **Firestore rules ARE per-document filters for queries**, but client-side filtering after a collection read is still the accepted pattern in this codebase — either approach works.
-2. **Deploying rules affects all apps sharing the project.** All apps now write Firestore, so make sure each app's auth identity is covered by the rules (customer-app identities may still need explicit clauses) before locking down further.
-3. Restaurant users can only **update existing** tickets, never create platform tickets, and only when the ticket's `restaurant_id` equals theirs.
-4. Known accepted trade-off: the client-side-filtered collection read means other restaurants' ticket payloads transit to the client. Future hardening option: query with `where("restaurant_id", "==", session.restaurantId)` so Firestore itself scopes the read.
+1. **RTDB rules are not filters.** The collection-level `.read` on `support/tickets` lets a permitted restaurant user download the list and filter client-side (accepted pattern in this codebase). The per-ticket/per-thread rules above still block any *targeted* read or write outside the restaurant, and messages are protected by the cross-node check against `/support/tickets/$ticketId/restaurant_id`.
+2. **Deploying rules affects the customer app.** The customer app currently reads/writes `/support` successfully only because rules are not deployed. Once you deploy, the customer app's access will be governed by these rules too — coordinate with the customer-app team (add explicit clauses for their auth identity, or stage the deploy). Deploy with `firebase deploy --only database` from this repo.
+3. Restaurant users can only **update existing** tickets (`data.exists()`), never create platform tickets, and only when the ticket's `restaurant_id` equals theirs.
+4. Known accepted trade-off: the client-side-filtered collection read means other restaurants' ticket payloads transit to the client. Future hardening option: maintain a denormalized index `/support/ticketsByRestaurant/{restaurantId}/{ticketId}` and scope reads to that node. Do not build the v1 on it unless the customer app agrees to maintain it.
 
 ---
 
@@ -241,7 +249,7 @@ const message: SupportMessage = {
 Then update the parent ticket exactly like `sendAgentReply()` in `src/lib/support.firebase.ts` does (read-modify-write):
 
 ```ts
-await updateDoc(doc(db, "tickets", ticketId), {
+await rtdbUpdate(`support/tickets/${ticketId}`, {
   last_message: body.slice(0, 160),
   last_message_at: at,
   last_message_from: "agent",
@@ -269,7 +277,7 @@ Build, at minimum:
 - **Inbox list**: subject, customer name, channel label (`chat→Chat`, `email→Email`, `phone→Phone`, `in_app→In-app`), status badge, priority badge, `last_message` preview, relative time from `last_message_at ?? created_at` (Super Admin's `relativeTime()` format: `just now`, `Xm`, `Xh`, `Xd`), unread dot/count from `unread_for_agent`.
 - **Tabs/filters**: by status (`open`, `in_progress`, `waiting`, `resolved`) + free-text search over subject/customer name/order number — applied **after** the restaurant filter.
 - **Thread view**: messages ascending, customer vs agent bubbles, composer enabled only with `rm.support.manage`, Resolve / Reopen buttons, disabled priority/assignment fields displayed as read-only context.
-- Live updates via Firestore `onSnapshot` subscriptions; clean up unsubscribers on unmount.
+- Live updates via `onValue` subscriptions; clean up unsubscribers on unmount.
 
 ## 9. Edge cases & gotchas checklist
 
@@ -279,7 +287,7 @@ Build, at minimum:
 - Empty states: distinguish "no inquiries" from "no permission" (`rm.support.view` absent → hide module entirely, show nothing about support).
 - A user whose restaurant assignment changes (via Super Admin Access Control) must see the new restaurant's tickets after `refreshRestaurantUserSession()` — never stale cache across restaurants.
 - Never display `restaurant_name` as a column/filter in your UI — it is constant for your users and displaying it invites multi-restaurant thinking.
-- Do **not** copy demo-store mock tickets into production paths; the live source is Firestore only.
+- Do **not** copy demo-store mock tickets into production paths; the live source is RTDB only.
 
 ## 10. Acceptance criteria
 
@@ -299,8 +307,7 @@ Build, at minimum:
 | `src/routes/_authenticated/support.tsx` | Full inbox/thread/reply/status UI to mirror |
 | `src/lib/restaurant-users.firebase.ts` | Sign-in + `RestaurantUserSession` (`restaurantId`) |
 | `src/lib/restaurant-permissions.ts` | Where to add `rm.support.view` / `rm.support.manage` |
-| `firestore.rules` | Security rules incl. the support clauses (§6) |
-| `scripts/migrate-rtdb-to-firestore.mjs` | One-time legacy data migration (`npm run migrate:rtdb`) |
+| `database.rules.json` | Where to add the `/support` rules (§6) |
 | `docs/CUSTOMER_APP_SUPPORT_INTEGRATION.md` | Shared contract with the customer app |
 | `SUPER_ADMIN_RESTAURANT_MANAGEMENT_HANDOVER.md` | Overall architecture, security gaps (§14), deploy notes (§26) |
 
