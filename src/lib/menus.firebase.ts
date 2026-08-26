@@ -1,15 +1,27 @@
-// Firebase-backed menu data layer.
-// Data shape (stored under the Realtime Database root):
-//   /menus/{restaurantId}/categories/{catId}   -> MenuCategory
-//   /menus/{restaurantId}/items/{itemId}       -> MenuItem
-//   /menus/{restaurantId}/variants/{varId}     -> MenuVariant
-//   /menus/{restaurantId}/addons/{addonId}     -> MenuAddon
-//   /menus/{restaurantId}/modifiers/{modId}    -> MenuModifier (choice groups)
+// Firebase-backed menu data layer (Cloud Firestore).
+// Data shape — one document per restaurant, entity kinds as map fields:
+//   menus/{restaurantId}                    -> { categories: {...}, items: {...},
+//                                                variants: {...}, addons: {...},
+//                                                modifiers: {...} }
+//   menus/{restaurantId}/categories/{catId} -> MenuCategory   (map entry)
+//   menus/{restaurantId}/items/{itemId}     -> MenuItem       (map entry)
+//   menus/{restaurantId}/variants/{varId}   -> MenuVariant    (map entry)
+//   menus/{restaurantId}/addons/{addonId}   -> MenuAddon      (map entry)
+//   menus/{restaurantId}/modifiers/{modId}  -> MenuModifier   (choice groups)
 //
 // Legacy Orderly Hub path /modifiers/{id} is NOT used for new writes.
 
-import { isFirebaseAvailable, rtdbGet, rtdbSet, rtdbSubscribe } from "@/lib/firebase";
+import {
+  isFirebaseAvailable,
+  rtdbGet,
+  rtdbSet,
+  rtdbSubscribe,
+  type RTDBValue,
+} from "@/lib/firebase";
 import type { FirebaseRestaurant } from "@/lib/restaurants.firebase";
+
+/** Cast a JS value to RTDBValue at write boundaries (mirrors orders/promotions). */
+const w = (v: unknown): RTDBValue => v as RTDBValue;
 
 export interface MenuCategory {
   id: string;
@@ -171,8 +183,7 @@ export function normalizeMenuItem(id: string, raw: RawMap, restaurantId: string)
           : null,
     category: String(raw["category"] ?? "General"),
     name: String(raw["name"] ?? ""),
-    description:
-      typeof raw["description"] === "string" ? raw["description"] : (raw["description"] ?? null),
+    description: typeof raw["description"] === "string" ? raw["description"] : null,
     price: Number(raw["price"] ?? 0),
     discount_price:
       raw["discount_price"] != null
@@ -199,6 +210,12 @@ export function normalizeMenuItem(id: string, raw: RawMap, restaurantId: string)
 }
 
 export function normalizeMenuVariant(id: string, raw: RawMap): MenuVariant {
+  const sortOrder =
+    typeof raw["sort_order"] === "number"
+      ? raw["sort_order"]
+      : typeof raw["sortOrder"] === "number"
+        ? raw["sortOrder"]
+        : undefined;
   return {
     id,
     menu_item_id: readMenuItemId(raw),
@@ -206,12 +223,7 @@ export function normalizeMenuVariant(id: string, raw: RawMap): MenuVariant {
     price_delta: Number(raw["price_delta"] ?? raw["priceDelta"] ?? 0),
     is_default: raw["is_default"] === true || raw["isDefault"] === true,
     is_available: raw["is_available"] !== false && raw["isAvailable"] !== false,
-    sort_order:
-      typeof raw["sort_order"] === "number"
-        ? raw["sort_order"]
-        : typeof raw["sortOrder"] === "number"
-          ? raw["sortOrder"]
-          : undefined,
+    ...(sortOrder !== undefined ? { sort_order: sortOrder } : {}),
   };
 }
 
@@ -437,11 +449,11 @@ export async function saveFirebaseMenuItem(
     modifier_config: modifierConfig,
   };
   // Write snake_case + camelCase aliases for cross-app compatibility.
-  await rtdbSet(`${base(input.restaurant_id, "items")}/${id}`, {
+  await rtdbSet(`${base(input.restaurant_id, "items")}/${id}`, w({
     ...record,
     modifierIds: modifierIds,
     modifierConfig: modifierConfig,
-  });
+  }));
   return { id };
 }
 
@@ -577,12 +589,12 @@ export async function saveFirebaseModifier(
     sort_order: input.sort_order ?? existing?.sort_order ?? Object.keys(all).length,
     is_available: input.is_available ?? existing?.is_available ?? true,
   };
-  await rtdbSet(`${base(input.restaurant_id, "modifiers")}/${id}`, {
+  await rtdbSet(`${base(input.restaurant_id, "modifiers")}/${id}`, w({
     ...record,
     includePricing: record.include_pricing,
     minSelections: record.min_selections,
     maxSelections: record.max_selections,
-  });
+  }));
   return { id };
 }
 
