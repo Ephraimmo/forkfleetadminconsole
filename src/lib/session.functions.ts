@@ -72,40 +72,10 @@ export interface DemoCredential {
 
 export const DEMO_CREDENTIALS: DemoCredential[] = [
   {
-    email: "avery.cole@forkfleet.demo",
-    password: "demo12345",
-    label: "Avery Cole",
-    rolePreview: "Super Admin",
-  },
-  {
-    email: "dispatch.lead@forkfleet.demo",
-    password: "demo12345",
-    label: "Sipho Dlamini",
-    rolePreview: "Dispatcher",
-  },
-  {
-    email: "kitchen.lead@forkfleet.demo",
-    password: "demo12345",
-    label: "Nadia Petersen",
-    rolePreview: "Kitchen Manager",
-  },
-  {
-    email: "finance@forkfleet.demo",
-    password: "demo12345",
-    label: "Ravi Naidoo",
-    rolePreview: "Finance Manager",
-  },
-  {
-    email: "support@forkfleet.demo",
-    password: "demo12345",
-    label: "Zanele Nkosi",
-    rolePreview: "Customer Support",
-  },
-  {
-    email: "owner.nonnas@forkfleet.demo",
-    password: "demo12345",
-    label: "Chloe Meyer",
-    rolePreview: "Restaurant Owner",
+    email: "karaboephraim2@gmail.com",
+    password: "Ephraim@217377781",
+    label: "Super Admin",
+    rolePreview: "Super Admin - Full Access",
   },
 ];
 

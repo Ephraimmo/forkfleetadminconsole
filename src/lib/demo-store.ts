@@ -336,22 +336,19 @@ grant("auditor", ["dashboard.view", "audit.view", "orders.view", "finance.view",
 export const DEMO_USER_ID = "usr-1";
 
 export const profiles: DemoProfile[] = [
-  { user_id: DEMO_USER_ID, email: "avery.cole@forkfleet.demo", full_name: "Avery Cole", job_title: "Head of Operations", last_login_at: minutesAgo(2) },
-  { user_id: "usr-2", email: "dispatch.lead@forkfleet.demo", full_name: "Sipho Dlamini", job_title: "Dispatch Lead", last_login_at: minutesAgo(24) },
-  { user_id: "usr-3", email: "kitchen.lead@forkfleet.demo", full_name: "Nadia Petersen", job_title: "Kitchen Manager", last_login_at: minutesAgo(96) },
-  { user_id: "usr-4", email: "finance@forkfleet.demo", full_name: "Ravi Naidoo", job_title: "Finance Manager", last_login_at: minutesAgo(300) },
-  { user_id: "usr-5", email: "support@forkfleet.demo", full_name: "Zanele Nkosi", job_title: "Support Specialist", last_login_at: minutesAgo(640) },
-  { user_id: "usr-6", email: "owner.nonnas@forkfleet.demo", full_name: "Chloe Meyer", job_title: "Restaurant Owner", last_login_at: minutesAgo(1500) },
+  { user_id: DEMO_USER_ID, email: "karaboephraim2@gmail.com", full_name: "Super Admin", job_title: "Head of Operations", last_login_at: minutesAgo(2) },
 ];
 
 export const userRoles: { user_id: string; role: StaffRoleValue }[] = [
   { user_id: DEMO_USER_ID, role: "super_admin" },
   { user_id: DEMO_USER_ID, role: "operations_manager" },
-  { user_id: "usr-2", role: "dispatcher" },
-  { user_id: "usr-3", role: "kitchen_manager" },
-  { user_id: "usr-4", role: "finance_manager" },
-  { user_id: "usr-5", role: "customer_support" },
-  { user_id: "usr-6", role: "restaurant_owner" },
+  { user_id: DEMO_USER_ID, role: "platform_admin" },
+  { user_id: DEMO_USER_ID, role: "restaurant_owner" },
+  { user_id: DEMO_USER_ID, role: "finance_manager" },
+  { user_id: DEMO_USER_ID, role: "dispatcher" },
+  { user_id: DEMO_USER_ID, role: "kitchen_manager" },
+  { user_id: DEMO_USER_ID, role: "customer_support" },
+  { user_id: DEMO_USER_ID, role: "auditor" },
 ];
 
 export const restaurantStaff: { id: string; restaurant_id: string; user_id: string; role: StaffRoleValue; is_active: boolean }[] = [
