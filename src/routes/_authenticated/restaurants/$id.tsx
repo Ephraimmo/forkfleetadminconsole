@@ -47,7 +47,8 @@ import {
   saveRestaurant,
   type HourRow,
 } from "@/lib/restaurants.functions";
-import { rtdbGet, isFirebaseAvailable, rtdbSet } from "@/lib/firebase";
+import { rtdbGet, isFirebaseAvailable } from "@/lib/firebase";
+import { fsDocGet, fsDocUpdate, fsIsAvailable } from "@/lib/firestore";
 import { RestaurantRewardsEditor } from "@/components/loyalty/restaurant-rewards-editor";
 import { PaymentMethodsEditor } from "@/components/restaurants/payment-methods-editor";
 import {
@@ -86,7 +87,7 @@ async function loadRestaurant(id: string) {
   // Try Firebase first (browser only), fall back to the demo serverFn.
   if (isFirebaseAvailable()) {
     try {
-      const snap = await rtdbGet<FirebaseRestaurant>(`restaurants/${id}`);
+      const snap = await fsDocGet<FirebaseRestaurant>(`restaurants/${id}`);
       if (snap) {
         const hours: HourRow[] = [];
         for (let d = 0; d < 7; d++) {
@@ -230,11 +231,11 @@ function RestaurantDetailPage() {
       return;
     }
     try {
-      await rtdbSet(`restaurants/${r.id}/delivery_enabled`, fulfilmentDelivery);
-      await rtdbSet(`restaurants/${r.id}/pickup_enabled`, fulfilmentPickup);
-      if (!fulfilmentDelivery) {
-        await rtdbSet(`restaurants/${r.id}/delivery_radius_km`, 0);
-      }
+      await fsDocUpdate(`restaurants/${r.id}`, {
+        delivery_enabled: fulfilmentDelivery,
+        pickup_enabled: fulfilmentPickup,
+        ...(!fulfilmentDelivery ? { delivery_radius_km: 0 } : {}),
+      });
       toast.success("Fulfilment methods saved");
       await queryClient.invalidateQueries({ queryKey: ["restaurant", id] });
       await queryClient.invalidateQueries({ queryKey: ["restaurants-fb"] });
@@ -248,8 +249,8 @@ function RestaurantDetailPage() {
     const r = query.data.restaurant as FirebaseRestaurant;
     const next = coverDraft.trim() ? coverDraft.trim() : null;
     try {
-      if (isFirebaseAvailable()) {
-        await rtdbSet(`restaurants/${r.id}/image_url`, next);
+      if (fsIsAvailable()) {
+        await fsDocUpdate(`restaurants/${r.id}`, { image_url: next });
       } else {
         toast.error("Firebase is unavailable — cover image not saved.");
         return;
@@ -392,7 +393,7 @@ function RestaurantDetailPage() {
     try {
       await saveFirebaseDeliveryTiers({ id: r.id, tiers });
       if (effectiveRadius !== Number(r.delivery_radius_km)) {
-        await rtdbSet(`restaurants/${r.id}/delivery_radius_km`, effectiveRadius);
+        await fsDocUpdate(`restaurants/${r.id}`, { delivery_radius_km: effectiveRadius });
       }
       toast.success(
         `Delivery fees saved — R${base} first ${step} km, +R${inc} every ${step} km up to ${effectiveRadius} km`,

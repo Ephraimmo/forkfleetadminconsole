@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// Cloud Firestore rules for ForkFleet (project e-comm-bd997).
+//
+// SCOPE: currently only the Restaurant Management collections live here
+// (restaurants + restaurantBranches). All other console data is still in the
+// Realtime Database (database.rules.json). Deploy with:
+//
+//   firebase deploy --only firestore
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    function isStaff() {
+      return signedIn() && exists(/databases/$(database)/documents/staffUsers/$(request.auth.uid));
+    }
+    function staffRole(role) {
+      return isStaff() && get(/databases/$(database)/documents/staffUsers/$(request.auth.uid)).data.roles[role] == true;
+    }
+    function isPlatformAdmin() {
+      return staffRole('super_admin')
+        || staffRole('platform_admin')
+        || staffRole('operations_manager');
+    }
+
+    function isRmUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid)).data.status == 'active';
+    }
+    function rmHasPerm(perm) {
+      return isRmUser()
+        && get(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid)).data.permissions[perm] == true;
+    }
+
+    // --------------------------------------------------------- restaurants
+
+    match /restaurants/{rid} {
+      allow read: if true; // menu/checkout data is public to the other apps
+      allow create, update: if isPlatformAdmin() || rmHasPerm('rm_profile_manage');
+      allow delete: if false;
+    }
+
+    match /restaurantBranches/{docId} {
+      allow read: if true;
+      allow write: if isPlatformAdmin() || rmHasPerm('rm_profile_manage');
+    }
+  }
+}

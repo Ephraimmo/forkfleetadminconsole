@@ -1,12 +1,19 @@
-// Firebase-backed restaurant data layer.
-// The "Restaurants" menu reads/writes to Firebase Realtime Database under
-// `/restaurants`. All other modules still use the local demo store so the
-// rest of the app is untouched.
+// Firebase-backed restaurant data layer (Cloud Firestore).
+// The "Restaurants" menu reads/writes the Firestore `restaurants` collection
+// (one document per restaurant). All other modules still use the Realtime
+// Database so the rest of the app is untouched.
 //
-// On first launch in a browser, if the `/restaurants` node is empty we seed
-// three starter restaurants with distinct Unsplash cover images.
+// On first launch in a browser, if the collection is empty we seed three
+// starter restaurants with distinct Unsplash cover images.
 
-import { isFirebaseAvailable, rtdbGet, rtdbSet, rtdbSubscribe } from "@/lib/firebase";
+import {
+  fsColGet,
+  fsColSubscribe,
+  fsDocGet,
+  fsDocSet,
+  fsDocUpdate,
+  fsIsAvailable,
+} from "@/lib/firestore";
 
 export type RestaurantStatus = "approved" | "pending" | "suspended" | "rejected";
 
@@ -44,7 +51,7 @@ export interface FirebaseRestaurant {
   longitude: number | null;
   image_url: string | null;
   created_at: string;
-  // Index signature so the record satisfies RTDBValue
+  // Index signature so extra legacy fields pass through unchanged
   [key: string]: string | number | boolean | null | undefined | DeliveryTier[];
 }
 
@@ -347,19 +354,15 @@ export function normaliseTiers(
  *  added (by id) without touching user-created records. */
 export async function ensureSeeded(): Promise<boolean> {
   if (seeded) return false;
-  if (!isFirebaseAvailable()) return false;
+  if (!fsIsAvailable()) return false;
   try {
-    const existing = (await rtdbGet<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH)) ?? {};
+    const existing = (await fsColGet(RESTAURANTS_PATH)) ?? {};
     let changed = false;
-    const payload = { ...existing };
     for (const r of SEED_RESTAURANTS) {
-      if (!payload[r.id]) {
-        payload[r.id] = r;
+      if (!existing[r.id]) {
+        await fsDocSet(`${RESTAURANTS_PATH}/${r.id}`, r as unknown as Record<string, unknown>);
         changed = true;
       }
-    }
-    if (changed) {
-      await rtdbSet(RESTAURANTS_PATH, payload);
     }
     seeded = true;
     void backfillTiers();
@@ -379,11 +382,11 @@ export async function listFirebaseRestaurants(input?: {
   search?: string;
   status?: string;
 }): Promise<FirebaseRestaurant[]> {
-  if (!isFirebaseAvailable()) return SEED_RESTAURANTS;
+  if (!fsIsAvailable()) return SEED_RESTAURANTS;
   await ensureSeeded();
   const search = input?.search?.trim().toLowerCase();
   const status = input?.status;
-  const data = await rtdbGet<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH);
+  const data = (await fsColGet(RESTAURANTS_PATH)) as Record<string, FirebaseRestaurant> | null;
   const rows = toArray(data).filter(
     (r) =>
       (!search ||
@@ -424,11 +427,11 @@ export type RestaurantInput = {
 };
 
 export async function saveFirebaseRestaurant(input: RestaurantInput): Promise<{ id: string }> {
-  if (!isFirebaseAvailable()) {
+  if (!fsIsAvailable()) {
     throw new Error("Firebase is unavailable right now. Check your connection and try again.");
   }
   await ensureSeeded();
-  const data = (await rtdbGet<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH)) ?? {};
+  const data = ((await fsColGet(RESTAURANTS_PATH)) ?? {}) as Record<string, FirebaseRestaurant>;
   const id = input.id ?? uid("rst");
   const existing = data[id];
   const record: FirebaseRestaurant = {
@@ -461,7 +464,7 @@ export async function saveFirebaseRestaurant(input: RestaurantInput): Promise<{ 
     image_url: input.image_url ?? existing?.image_url ?? null,
     created_at: existing?.created_at ?? new Date().toISOString(),
   };
-  await rtdbSet(`${RESTAURANTS_PATH}/${id}`, record);
+  await fsDocSet(`${RESTAURANTS_PATH}/${id}`, record as unknown as Record<string, unknown>);
   return { id };
 }
 
@@ -469,12 +472,11 @@ export async function setFirebaseRestaurantStatus(input: {
   id: string;
   status: RestaurantStatus;
 }): Promise<{ ok: true }> {
-  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable.");
+  if (!fsIsAvailable()) throw new Error("Firebase unavailable.");
   await ensureSeeded();
-  const data = (await rtdbGet<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH)) ?? {};
-  const current = data[input.id];
+  const current = (await fsDocGet<FirebaseRestaurant>(`${RESTAURANTS_PATH}/${input.id}`));
   if (!current) throw new Error("Restaurant not found");
-  await rtdbSet(`${RESTAURANTS_PATH}/${input.id}/status`, input.status);
+  await fsDocUpdate(`${RESTAURANTS_PATH}/${input.id}`, { status: input.status });
   return { ok: true };
 }
 
@@ -484,17 +486,18 @@ export async function saveFirebaseDeliveryTiers(input: {
   id: string;
   tiers: DeliveryTier[];
 }): Promise<{ ok: true; radius: number; tiers: DeliveryTier[] }> {
-  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable.");
+  if (!fsIsAvailable()) throw new Error("Firebase unavailable.");
   await ensureSeeded();
-  const data = (await rtdbGet<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH)) ?? {};
-  const current = data[input.id];
+  const current = await fsDocGet<FirebaseRestaurant>(`${RESTAURANTS_PATH}/${input.id}`);
   if (!current) throw new Error("Restaurant not found");
   const sorted = input.tiers.slice().sort((a, b) => a.up_to_km - b.up_to_km);
-  const radius = Math.max(Number(current.delivery_radius_km) ?? 0, sorted[sorted.length - 1]?.up_to_km ?? 0);
-  await rtdbSet(`${RESTAURANTS_PATH}/${input.id}/delivery_tiers`, sorted as unknown as import("@/lib/firebase").RTDBValue);
-  if (radius > (Number(current.delivery_radius_km) ?? 0)) {
-    await rtdbSet(`${RESTAURANTS_PATH}/${input.id}/delivery_radius_km`, radius);
+  const currentRadius = Number(current.delivery_radius_km ?? 0);
+  const radius = Math.max(currentRadius, sorted[sorted.length - 1]?.up_to_km ?? 0);
+  const patch: Record<string, unknown> = { delivery_tiers: sorted };
+  if (radius > currentRadius) {
+    patch["delivery_radius_km"] = radius;
   }
+  await fsDocUpdate(`${RESTAURANTS_PATH}/${input.id}`, patch);
   return { ok: true, radius, tiers: sorted };
 }
 
@@ -507,13 +510,14 @@ export async function saveFirebaseDeliveryTiers(input: {
  *  Runs lazily on list/subscribe so existing Firebase data is repaired
  *  without a destructive reset. */
 async function backfillTiers() {
-  if (!isFirebaseAvailable()) return;
+  if (!fsIsAvailable()) return;
   try {
-    const data = (await rtdbGet<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH)) ?? {};
+    const data = (await fsColGet(RESTAURANTS_PATH)) as Record<string, FirebaseRestaurant> | null;
+    const rows = Object.values(data ?? {});
     let tierWrites = 0;
     let flagWrites = 0;
     let repairWrites = 0;
-    for (const r of Object.values(data)) {
+    for (const r of rows) {
       if (!r) continue;
       const radius = Number(r.delivery_radius_km) || 0;
       const existing = (r.delivery_tiers as unknown as DeliveryTier[] | undefined) ?? [];
@@ -523,18 +527,14 @@ async function backfillTiers() {
       if (needsRepair) {
         const saneRadius = Math.max(5, Math.min(15, Math.round((Number(r.commission_rate) ? 10 : 10))));
         const tiers = defaultTiersFor(saneRadius);
-        await rtdbSet(
-          `${RESTAURANTS_PATH}/${r.id}/delivery_tiers`,
-          tiers as unknown as import("@/lib/firebase").RTDBValue,
-        );
-        await rtdbSet(`${RESTAURANTS_PATH}/${r.id}/delivery_radius_km`, saneRadius);
+        await fsDocUpdate(`${RESTAURANTS_PATH}/${r.id}`, {
+          delivery_tiers: tiers,
+          delivery_radius_km: saneRadius,
+        });
         repairWrites++;
       } else if (missingTiers) {
         const tiers = defaultTiersFor(radius || 8);
-        await rtdbSet(
-          `${RESTAURANTS_PATH}/${r.id}/delivery_tiers`,
-          tiers as unknown as import("@/lib/firebase").RTDBValue,
-        );
+        await fsDocUpdate(`${RESTAURANTS_PATH}/${r.id}`, { delivery_tiers: tiers });
         tierWrites++;
       }
 
@@ -548,9 +548,7 @@ async function backfillTiers() {
         patches["pickup_enabled"] = true;
       }
       if (Object.keys(patches).length > 0) {
-        for (const [k, v] of Object.entries(patches)) {
-          await rtdbSet(`${RESTAURANTS_PATH}/${r.id}/${k}`, v);
-        }
+        await fsDocUpdate(`${RESTAURANTS_PATH}/${r.id}`, patches);
         flagWrites++;
       }
     }
@@ -567,15 +565,19 @@ async function backfillTiers() {
 export function subscribeRestaurants(
   callback: (rows: FirebaseRestaurant[]) => void,
 ): () => void {
-  if (!isFirebaseAvailable()) {
+  if (!fsIsAvailable()) {
     callback(SEED_RESTAURANTS);
     return () => {};
   }
   // Make sure the seed is in place before subscribing so we don't
   // overwrite user data.
   void ensureSeeded();
-  return rtdbSubscribe<Record<string, FirebaseRestaurant>>(RESTAURANTS_PATH, (val) => {
-    callback(toArray(val).sort((a, b) => b.created_at.localeCompare(a.created_at)));
+  return fsColSubscribe(RESTAURANTS_PATH, (val) => {
+    callback(
+      toArray(val as Record<string, FirebaseRestaurant> | null).sort((a, b) =>
+        b.created_at.localeCompare(a.created_at),
+      ),
+    );
   });
 }
 
