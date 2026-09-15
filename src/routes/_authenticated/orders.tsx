@@ -625,10 +625,11 @@ function eligibilityHint(
   if (approved.length === 0) {
     return "No approved drivers yet — approve a driver in Drivers → driver profile.";
   }
+  const idSuffix = ` [order restaurant_id="${order.restaurant_id ?? "—"}" branch_id="${order.branch_id ?? "—"}"]`;
   if (atRestaurant.length === 0) {
-    return `${approved.length} approved driver(s), but none is assigned to ${order.restaurant_name}. Assign one in Drivers → Assignments.`;
+    return `${approved.length} approved driver(s), but none is assigned to ${order.restaurant_name}. Assign one in Drivers → Assignments.${idSuffix}`;
   }
-  return `${atRestaurant.length} driver(s) cover ${order.restaurant_name}, but none covers this order's branch (${order.branch_name ?? order.branch_id ?? "unknown"}). Open the driver in Drivers → Assignments and use "Cover all branches".`;
+  return `${atRestaurant.length} driver(s) cover ${order.restaurant_name}, but none covers this order's branch (${order.branch_name ?? order.branch_id ?? "unknown"}). Open the driver in Drivers → Assignments and use "Cover all branches".${idSuffix}`;
 }
 
 function OrdersTable({
@@ -709,11 +710,11 @@ function OrdersTable({
                   {canManage && order.status === "ready" && order.order_type !== "pickup" ? (
                     eligibleDriversFor(order, drivers, activeAssignments, branchRegistry).length ===
                     0 ? (
-                      <span
-                        className="text-[11px] text-amber-400"
-                        title={eligibilityHint(order, drivers, activeAssignments)}
-                      >
+                      <span className="block max-w-[220px] text-[11px] text-amber-400">
                         No approved driver for this branch
+                        <span className="mt-0.5 block break-words text-[10px] font-normal text-muted-foreground">
+                          {eligibilityHint(order, drivers, activeAssignments)}
+                        </span>
                       </span>
                     ) : (
                       <Select
@@ -1119,12 +1120,12 @@ function OrderCard({
             const eligible = eligibleDriversFor(order, drivers, activeAssignments, branchRegistry);
             if (eligible.length === 0) {
               return (
-                <span
-                  className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-400"
-                  title={eligibilityHint(order, drivers, activeAssignments)}
-                >
+                <div className="w-full rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-400">
                   No approved driver for this branch
-                </span>
+                  <div className="mt-0.5 break-words text-[10px] font-normal text-muted-foreground">
+                    {eligibilityHint(order, drivers, activeAssignments)}
+                  </div>
+                </div>
               );
             }
             return (
