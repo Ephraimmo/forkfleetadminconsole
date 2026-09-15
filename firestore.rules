@@ -1,0 +1,181 @@
+rules_version = '2';
+
+// ---------------------------------------------------------------------------
+// ForkFleet — Cloud Firestore security rules
+// ---------------------------------------------------------------------------
+// Replaces the previous Realtime Database rules (database.rules.json, removed).
+// Logical paths are preserved: restaurants/{id}, orders/{id}, menus/{rid}/items/{id},
+// settings/{section}, support/_/tickets/{id}, promotions/_/codes/{id}, etc.
+// ---------------------------------------------------------------------------
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function staff() {
+      return get(/databases/$(database)/documents/staffUsers/$(request.auth.uid)).data;
+    }
+
+    function hasStaffRole(role) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/staffUsers/$(request.auth.uid))
+        && staff().roles[role] == true;
+    }
+
+    function isPlatformAdmin() {
+      return hasStaffRole('super_admin')
+        || hasStaffRole('platform_admin')
+        || hasStaffRole('operations_manager');
+    }
+
+    function restaurantUser() {
+      return get(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid)).data;
+    }
+
+    function isRestaurantMember(restaurantId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid))
+        && restaurantUser().restaurant_id == restaurantId
+        && restaurantUser().status == 'active';
+    }
+
+    function isAnyRestaurantMember() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/restaurantUsers/$(request.auth.uid))
+        && restaurantUser().status == 'active';
+    }
+
+    // ------------------------------------------------------------- accounts
+    match /staffUsers/{uid} {
+      // Bootstrap: the very first staff account may create itself as super_admin.
+      allow read: if signedIn() && (request.auth.uid == uid || isPlatformAdmin());
+      allow create: if signedIn()
+        && ((request.auth.uid == uid && request.resource.data.roles.super_admin == true)
+            || isPlatformAdmin());
+      allow update, delete: if isPlatformAdmin();
+    }
+
+    match /restaurantUsers/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isPlatformAdmin());
+      allow create: if signedIn()
+        && ((request.auth.uid == uid && request.resource.data.uid == uid)
+            || isPlatformAdmin());
+      allow update, delete: if isPlatformAdmin();
+    }
+
+    match /staffAudit/{doc} {
+      allow read: if isPlatformAdmin();
+      allow write: if signedIn();
+    }
+
+    match /restaurantUserAudit/{doc} {
+      allow read: if isPlatformAdmin();
+      allow write: if signedIn();
+    }
+
+    // -------------------------------------------------------- restaurants
+    match /restaurants/{restaurantId} {
+      allow read: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      allow write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      match /{document=**} {
+        allow read, write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      }
+    }
+
+    match /restaurantBranches/{restaurantId} {
+      allow read: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      allow write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      match /{document=**} {
+        allow read, write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      }
+    }
+
+    // ---------------------------------------------- menus (per restaurant)
+    match /menus/{restaurantId}/{collection}/{docId} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+    }
+    match /menus/{restaurantId} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+    }
+
+    // ------------------------------------------------------------- orders
+    match /orders/{orderId} {
+      allow read, write: if isPlatformAdmin() || isAnyRestaurantMember();
+      match /{document=**} {
+        allow read, write: if isPlatformAdmin() || isAnyRestaurantMember();
+      }
+    }
+
+    // ------------------------------------------------------------ drivers
+    match /drivers/{driverId} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin() || isAnyRestaurantMember();
+    }
+
+    match /driverAssignments/{doc} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin() || isAnyRestaurantMember();
+    }
+
+    // ------------------------------------------- promotions & loyalty
+    match /promotions/{doc} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin() || isAnyRestaurantMember();
+      match /{document=**} {
+        allow read: if signedIn();
+        allow write: if isPlatformAdmin() || isAnyRestaurantMember();
+      }
+    }
+
+    // ------------------------------------------------------ notifications
+    match /notificationAlerts/{doc} {
+      allow read, write: if signedIn();
+    }
+    match /notificationTriggers/{doc} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin();
+    }
+    match /notificationReads/{doc} {
+      allow read, write: if signedIn();
+    }
+    match /notificationAudit/{doc} {
+      allow read: if isPlatformAdmin();
+      allow write: if signedIn();
+    }
+
+    // ---------------------------------------------------- platform settings
+    match /settings/{section} {
+      allow read: if signedIn();
+      allow write: if isPlatformAdmin();
+      match /{document=**} {
+        allow read: if signedIn();
+        allow write: if isPlatformAdmin();
+      }
+    }
+    match /settingsAudit/{doc} {
+      allow read: if isPlatformAdmin();
+      allow write: if signedIn();
+    }
+
+    // -------------------------------------------------------- support desk
+    match /support/{container}/{collection}/{docId} {
+      allow read, write: if signedIn();
+      match /{document=**} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    // -------------------------------------------------------------- uploads
+    match /uploads/{container}/{collection}/{docId} {
+      allow read: if signedIn();
+      allow write: if signedIn();
+    }
+
+    // Everything else is denied by default.
+  }
+}
