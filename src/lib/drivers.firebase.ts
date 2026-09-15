@@ -286,7 +286,13 @@ export function hasActiveAssignment(
   if (!restaurantId) return false;
   let branchKey = normalizeBranchKey(branchId);
   const restaurantKey = normalizeRestaurantKey(restaurantId);
-  if (branchKey && knownBranchIds && knownBranchIds.length > 0) {
+  // `knownBranchIds` being an array at all (even empty) means the caller has
+  // the restaurant's authoritative branch registry loaded. Many restaurants
+  // have NO entries in that registry (never configured branches), which is a
+  // real, common state — not "registry not loaded yet" — so an empty array
+  // must still make an unrecognized branch id fall back to restaurant-level
+  // coverage, exactly like a registry that has entries but doesn't list it.
+  if (branchKey && knownBranchIds) {
     const known = knownBranchIds.map((b) => normalizeBranchKey(b));
     if (!known.includes(branchKey)) branchKey = ""; // branch not part of this restaurant
   }

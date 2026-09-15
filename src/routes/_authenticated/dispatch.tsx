@@ -186,7 +186,7 @@ function DispatchPage() {
   // eligible for assignment.
   const eligibleDrivers = useMemo(() => {
     if (!assigning) return [];
-    const knownBranchIds = branchRegistry[assigning.restaurant_id ?? ""]?.map((b) => b.id);
+    const knownBranchIds = (branchRegistry[assigning.restaurant_id ?? ""] ?? []).map((b) => b.id);
     return fleet.rows.filter(
       (d) =>
         isApprovedDriver(d) &&
@@ -204,7 +204,7 @@ function DispatchPage() {
   // condition is visible without digging through the console.
   const diagnostics = useMemo(() => {
     if (!assigning) return null;
-    const knownBranchIds = branchRegistry[assigning.restaurant_id ?? ""]?.map((b) => b.id);
+    const knownBranchIds = (branchRegistry[assigning.restaurant_id ?? ""] ?? []).map((b) => b.id);
     const approved = fleet.rows.filter((d) => isApprovedDriver(d));
     const assignedToRestaurant = approved.filter((d) =>
       hasActiveAssignment(activeAssignments, d.id, assigning.restaurant_id, null),

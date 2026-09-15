@@ -598,7 +598,7 @@ function eligibleDriversFor(
   activeAssignments: DriverAssignment[],
   branchRegistry: Record<string, RestaurantBranch[]>,
 ): DriverRow[] {
-  const knownBranchIds = branchRegistry[order.restaurant_id ?? ""]?.map((b) => b.id);
+  const knownBranchIds = (branchRegistry[order.restaurant_id ?? ""] ?? []).map((b) => b.id);
   return drivers.filter(
     (d) =>
       isApprovedDriver(d) &&

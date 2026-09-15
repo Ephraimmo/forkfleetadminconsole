@@ -117,6 +117,39 @@ describe("hasActiveAssignment — the assignment decision", () => {
     const approved = isApprovedDriver({ is_verified: true, status: "online" });
     expect(approved && hasActiveAssignment(rows, driver, "rst-burgerlab", "brn-test1")).toBe(false);
   });
+
+  describe("knownBranchIds fallback (restaurant's branch registry)", () => {
+    it("falls back to restaurant-level coverage when the order's branch is foreign (not in the registry)", () => {
+      // Driver covers "main" at rst-soshanguve; the order carries a branch id
+      // that belongs to a different restaurant entirely (stale/foreign key).
+      const rows = [assignment(driver, "rst-soshanguve", "main")];
+      expect(
+        hasActiveAssignment(rows, driver, "rst-soshanguve", "brn-burger-lab-8kq", ["main"]),
+      ).toBe(true);
+    });
+
+    it("falls back to restaurant-level coverage when the restaurant has NO registered branches at all", () => {
+      // Restaurant genuinely has zero entries under /restaurantBranches — the
+      // registry array is empty, not missing. An empty array must behave the
+      // same as a non-empty registry that doesn't list the order's branch.
+      const rows = [assignment(driver, "rst-soshanguve", "main")];
+      expect(hasActiveAssignment(rows, driver, "rst-soshanguve", "brn-burger-lab-8kq", [])).toBe(
+        true,
+      );
+    });
+
+    it("still requires an exact branch match when the order's branch IS in the registry", () => {
+      const rows = [assignment(driver, "rst-burgerlab", "brn-test1")];
+      expect(
+        hasActiveAssignment(rows, driver, "rst-burgerlab", "brn-main", ["brn-main", "brn-test1"]),
+      ).toBe(false);
+    });
+
+    it("without a knownBranchIds argument, behaves exactly as before (no fallback)", () => {
+      const rows = [assignment(driver, "rst-burgerlab", "brn-main")];
+      expect(hasActiveAssignment(rows, driver, "rst-burgerlab", "brn-test1")).toBe(false);
+    });
+  });
 });
 
 describe("assignmentKey", () => {
