@@ -97,9 +97,7 @@ const NEXT_STATUS: Record<OrderStatus, OrderStatus | undefined> = {
   accepted: "preparing",
   preparing: "ready",
   ready: undefined, // dispatch picks up from here
-  offered: undefined,
   assigned: undefined,
-  arrived: undefined,
   picked_up: undefined,
   on_the_way: undefined,
   delivered: undefined,

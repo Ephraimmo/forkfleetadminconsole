@@ -5,35 +5,50 @@
 // moved to Firebase yet — driver id/name/phone are joined in from the order's
 // persisted driver_* fields when present.
 //
-// Lifecycle enforced here:
+// Lifecycle enforced here — see docs/ORDER_WORKFLOW_HANDOVER.md for the
+// authoritative driver-app contract this is built against:
 //   pending      -> accept (Orders page) or reject (Orders page, with reason)
 //   accepted     -> kitchen starts cooking   (Orders page "Send to kitchen" or auto)
 //   preparing    -> kitchen marks ready
-//   ready        -> dispatcher OFFERS a driver  ← only assignable status
-//   offered      -> driver app: driver accepts (staff may re-offer a different
-//                   driver while here — this is the only reassignable status
-//                   besides "ready"). No staff override to force acceptance.
-//   assigned     -> driver app writes "arrived" when the driver reaches the
-//                   restaurant. Staff ALSO have a manual "Mark arrived at
-//                   restaurant" fallback for this one step (re-added
-//                   2026-09-17 — orders were getting permanently stuck here
-//                   while the driver app's arrived write wasn't shipped yet).
-//   arrived      -> staff mark it picked up.
-//   picked_up    -> driver marks on the way
-//   on_the_way   -> driver marks delivered
+//   ready        -> dispatcher assigns a driver (`driver_id` only — `status`
+//                   does NOT change; it stays "ready" until the driver
+//                   accepts). Staff may re-pick a different driver as many
+//                   times as they like while `status` is still "ready".
+//   ready + driver_id set, not yet accepted -> driver app: driver accepts,
+//                   writing `status: "assigned"`. No staff override exists
+//                   to force this — only reassignment (above).
+//   assigned     -> driver app writes `driver_status: "arrived_at_restaurant"`
+//                   when the driver reaches the restaurant (`status` stays
+//                   "assigned" — it is NOT a `status` value). Staff also have
+//                   a manual "Mark arrived at restaurant" fallback for this
+//                   one step (re-added 2026-09-17 — orders were getting
+//                   permanently stuck here while the driver app's write
+//                   wasn't shipped yet). This fallback writes the SAME
+//                   fields the driver app would, never a fake `status`.
+//   assigned + driver_status "arrived_at_restaurant" -> driver verifies a
+//                   pickup code and taps "Picked up" in their own app,
+//                   writing `status: "picked_up"`. Per the handover doc this
+//                   is driver-exclusive (PIN verification) — there is
+//                   deliberately no staff override for it.
+//   picked_up    -> driver marks on the way (`status: "on_the_way"`) — no
+//                   staff override; view + cancel only from here on.
+//   on_the_way   -> driver marks delivered (`status: "delivered"`) — no
+//                   staff override.
 //   delivered / rejected / cancelled / refunded are terminal.
 //
-// "offered" -> "assigned" (driver accepting) is still driver-app ONLY — no
-// staff override exists for that step, only reassignment to a different
-// driver. "assigned" -> "arrived" may be written by either the driver app or
-// staff (see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md).
+// Orders never store a `status` of "offered" or "arrived" going forward —
+// those were written by an earlier, incorrect build of this console.
+// orderStage() below treats any such surviving records as their real
+// equivalent, so old in-flight orders keep working without a migration.
 
 import {
   assignFirebaseDriver,
+  markArrivedAtRestaurant as markArrivedAtRestaurantFb,
   orderType,
   rejectFirebaseOrder,
   setFirebaseOrderStatus,
   subscribeFirebaseOrders,
+  type DriverStatus as OrderDriverStatus,
   type FirebaseOrder,
   type OrderLine,
   type OrderPayload,
@@ -55,6 +70,8 @@ import {
 } from "@/lib/demo-store";
 
 export type { OrderStatus };
+/** A driver's own online/offline/busy/etc profile status — NOT to be
+ *  confused with `OrderDriverStatus` (an order's driver-side progress). */
 export type DriverStatus = StoreDriverStatus;
 
 export interface DispatchOrder {
@@ -64,8 +81,11 @@ export interface DispatchOrder {
   /** "delivery" needs a driver; "pickup" is collected by the customer. */
   order_type: OrderType;
   placed_at: string;
-  driver_accepted_at: string | null;
-  arrived_at: string | null;
+  driver_status: OrderDriverStatus | null;
+  assigned_at: string | null;
+  arrived_at_restaurant: string | null;
+  on_the_way_at: string | null;
+  arrived_at_customer: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
   rejected_at: string | null;
@@ -135,17 +155,100 @@ export interface AuditRow {
   created_at: string;
 }
 
-// Orders that show on the Dispatch board (ready-for-pickup + in-flight)
+/**
+ * The admin-facing lifecycle stage — finer-grained than `status` alone, per
+ * docs/ORDER_WORKFLOW_HANDOVER.md section 2. `status` can't tell "waiting for
+ * a driver to accept" apart from "no driver picked yet" (both are `status:
+ * "ready"`), or "heading to the restaurant" apart from "at the restaurant"
+ * (both are `status: "assigned"`) — those need `driver_id` / `driver_status`
+ * too.
+ */
+export type OrderStage =
+  | "pending"
+  | "accepted"
+  | "preparing"
+  | "ready" // pickup orders only — waiting for the customer to collect
+  | "unassigned" // delivery, "ready", no driver picked yet
+  | "waiting_accept" // delivery, driver picked, hasn't accepted yet
+  | "heading_to_restaurant" // delivery, driver accepted, not yet at the restaurant
+  | "at_restaurant" // delivery, driver at the restaurant
+  | "picked_up"
+  | "on_the_way"
+  | "at_customer" // delivery, driver at the customer's door
+  | "delivered"
+  | "rejected"
+  | "cancelled"
+  | "refunded";
+
+/** Human copy for each stage — lifted straight from the handover doc's
+ *  suggested admin status labels. */
+export const STAGE_LABEL: Record<OrderStage, string> = {
+  pending: "Pending",
+  accepted: "Accepted",
+  preparing: "Preparing",
+  ready: "Ready for pickup",
+  unassigned: "Unassigned",
+  waiting_accept: "Waiting for driver to accept",
+  heading_to_restaurant: "Waiting for driver to get to the restaurant",
+  at_restaurant: "Driver at restaurant — picking up order",
+  picked_up: "Order picked up — driver en route",
+  on_the_way: "On the way to customer",
+  at_customer: "Driver at customer's door",
+  delivered: "Delivered",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+  refunded: "Refunded",
+};
+
+/**
+ * Computes the admin lifecycle stage for a delivery or pickup order.
+ * Also normalizes the legacy "offered"/"arrived" `status` values an earlier,
+ * incorrect console build wrote, so old in-flight orders keep resolving to
+ * the right stage without a data migration.
+ */
+export function orderStage(o: {
+  status: OrderStatus;
+  order_type: OrderType;
+  driver_id: string | null;
+  driver_status: OrderDriverStatus | null;
+}): OrderStage {
+  const raw = o.status as string;
+
+  if (o.order_type === "pickup") {
+    // No driver is ever involved for pickup orders — the stage is the raw status.
+    return raw as OrderStage;
+  }
+
+  if (raw === "ready" || raw === "offered") {
+    return o.driver_id ? "waiting_accept" : "unassigned";
+  }
+  if (raw === "assigned" || raw === "arrived") {
+    return raw === "arrived" || o.driver_status === "arrived_at_restaurant"
+      ? "at_restaurant"
+      : "heading_to_restaurant";
+  }
+  if (raw === "on_the_way") {
+    return o.driver_status === "arrived_at_customer" ? "at_customer" : "on_the_way";
+  }
+  // pending, accepted, preparing, picked_up, delivered, rejected, cancelled, refunded
+  return raw as OrderStage;
+}
+
+// Orders that show on the Dispatch board (ready-for-pickup + in-flight).
+// "ready" covers both "unassigned" and "waiting to accept" — they share the
+// same raw `status`; the dispatch board tells them apart via orderStage().
+// "offered"/"arrived" are legacy raw-status values still handled for
+// backward compatibility with orders an earlier console build wrote.
 const DISPATCH_STATUSES: OrderStatus[] = [
   "ready",
-  "offered",
   "assigned",
-  "arrived",
   "picked_up",
   "on_the_way",
 ];
-// Active (driver already attached)
-const ACTIVE_STATUSES: OrderStatus[] = ["offered", "assigned", "arrived", "picked_up", "on_the_way"];
+const LEGACY_DISPATCH_STATUSES = ["offered", "arrived"];
+// A driver "has" an order (counts against their active load) for any of these.
+const ACTIVE_STATUSES: OrderStatus[] = ["ready", "assigned", "picked_up", "on_the_way"];
+const LEGACY_ACTIVE_STATUSES = ["offered", "arrived"];
 // Terminal statuses that should never be acted on
 const TERMINAL_STATUSES: OrderStatus[] = ["delivered", "rejected", "cancelled", "refunded"];
 
@@ -157,8 +260,11 @@ function toDispatchOrder(p: OrderPayload): DispatchOrder {
     status: o.status,
     order_type: orderType(o),
     placed_at: o.placed_at,
-    driver_accepted_at: o.driver_accepted_at,
-    arrived_at: o.arrived_at,
+    driver_status: o.driver_status,
+    assigned_at: o.assigned_at,
+    arrived_at_restaurant: o.arrived_at_restaurant,
+    on_the_way_at: o.on_the_way_at,
+    arrived_at_customer: o.arrived_at_customer,
     delivered_at: o.delivered_at,
     cancelled_at: o.cancelled_at,
     rejected_at: o.rejected_at ?? null,
@@ -263,7 +369,10 @@ export async function getDispatchBoard(
   const input = unwrap(arg);
   const restaurantId = input?.restaurantId;
   return getCached()
-    .filter((o) => DISPATCH_STATUSES.includes(o.status))
+    .filter(
+      (o) =>
+        DISPATCH_STATUSES.includes(o.status) || LEGACY_DISPATCH_STATUSES.includes(o.status),
+    )
     .filter((o) => !restaurantId || restaurantId === "all" || o.restaurant_id === restaurantId)
     .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime())
     .slice(0, 150);
@@ -302,7 +411,10 @@ export async function listDrivers(
   const search = input?.search?.trim().toLowerCase();
   const counts: Record<string, number> = {};
   for (const order of getCached()) {
-    if (order.driver_id && ACTIVE_STATUSES.includes(order.status)) {
+    if (
+      order.driver_id &&
+      (ACTIVE_STATUSES.includes(order.status) || LEGACY_ACTIVE_STATUSES.includes(order.status))
+    ) {
       counts[order.driver_id] = (counts[order.driver_id] ?? 0) + 1;
     }
   }
@@ -365,11 +477,12 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
   const input = unwrap(arg)!;
   const order = getCached().find((o) => o.id === input.orderId);
   if (!order) throw new Error("Order not found");
-  // Ready orders can be offered a driver for the first time; "offered" orders
-  // can be re-offered to a different driver while the current one hasn't
-  // accepted yet. Once "assigned" (accepted), staff can no longer swap drivers
-  // through this flow.
-  if (order.status !== "ready" && order.status !== "offered") {
+  // Ready orders can be offered a driver for the first time; a legacy
+  // "offered" order (from an earlier console build) can be re-offered to a
+  // different driver while the current one hasn't accepted yet. Once
+  // "assigned" (accepted), staff can no longer swap drivers through this flow.
+  const rawStatus = order.status as string;
+  if (rawStatus !== "ready" && rawStatus !== "offered") {
     throw new Error(
       `You can only assign a driver when the order is ready for delivery or waiting for a driver to accept (currently ${order.status.replace("_", " ")}).`,
     );
@@ -421,10 +534,33 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
   }
 
   logAudit({
-    action: "order.driver.offered",
+    action: "order.driver.assigned",
     entityType: "order",
     entityId: input.orderId,
-    after: { status: "offered", driver_id: input.driverId },
+    after: { driver_id: input.driverId },
+    actorEmail: currentActor(),
+  });
+  return { ok: true };
+}
+
+/**
+ * Staff fallback: mark the driver as having reached the restaurant. Mirrors
+ * exactly what the driver app itself would write — see
+ * markArrivedAtRestaurant() in orders.firebase.ts. `status` is untouched.
+ */
+export async function markArrivedAtRestaurant(
+  arg: { orderId: string } | { data: { orderId: string } },
+) {
+  const input = unwrap(arg)!;
+  const existing = getCached().find((o) => o.id === input.orderId);
+  if (!existing) throw new Error("Order not found");
+  await markArrivedAtRestaurantFb({ orderId: input.orderId, actor: currentActor() });
+  logAudit({
+    action: "order.driver_status.arrived_at_restaurant",
+    entityType: "order",
+    entityId: input.orderId,
+    before: { driver_status: existing.driver_status ?? null },
+    after: { driver_status: "arrived_at_restaurant" },
     actorEmail: currentActor(),
   });
   return { ok: true };
@@ -432,31 +568,28 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
 
 type AdvanceInput = { orderId: string; nextStatus: OrderStatus; etaMinutes?: number };
 
-// "offered" and "assigned" are deliberately excluded — staff can never force
-// a driver's acceptance. "arrived" IS included: a manual staff fallback for
-// when the driver app hasn't (yet) written it.
-const DISPATCH_TRANSITIONS: OrderStatus[] = [
-  "arrived",
-  "picked_up",
-  "on_the_way",
-  "delivered",
-  "cancelled",
-];
+// Pickup orders have no driver at all — staff drive the whole flow manually:
+// ready → picked_up (customer collected) → delivered (closed), or cancelled.
+const PICKUP_TRANSITIONS: OrderStatus[] = ["picked_up", "delivered", "cancelled"];
+// Delivery orders: per docs/ORDER_WORKFLOW_HANDOVER.md, "picked_up" onward is
+// driver-app-exclusive (pickup itself requires a PIN the driver verifies) —
+// staff can only cancel through this generic mutation. "Mark arrived at
+// restaurant" is a separate, dedicated fallback (markArrivedAtRestaurant
+// above) precisely because it does NOT go through `status` at all.
+const DELIVERY_TRANSITIONS: OrderStatus[] = ["cancelled"];
 
 export async function advanceDelivery(arg: AdvanceInput | { data: AdvanceInput }) {
   const input = unwrap(arg)!;
-  if (!DISPATCH_TRANSITIONS.includes(input.nextStatus)) {
-    throw new Error("Unsupported delivery transition");
-  }
   const existing = getCached().find((o) => o.id === input.orderId);
   if (!existing) throw new Error("Order not found");
   const isPickup = existing.order_type === "pickup";
-  if (input.nextStatus !== "cancelled" && !existing.driver_id && !isPickup) {
-    throw new Error("Assign a driver before moving the delivery forward");
-  }
-  // Pickup orders only move ready → picked_up (collected) → delivered (closed).
-  if (isPickup && !["picked_up", "delivered", "cancelled"].includes(input.nextStatus)) {
-    throw new Error("Pickup orders can only be marked collected, completed or cancelled");
+  const allowed = isPickup ? PICKUP_TRANSITIONS : DELIVERY_TRANSITIONS;
+  if (!allowed.includes(input.nextStatus)) {
+    throw new Error(
+      isPickup
+        ? "Pickup orders can only be marked collected, completed or cancelled"
+        : "Delivery orders can only be cancelled from this screen — pickup, on the way and delivered are written by the driver app",
+    );
   }
   if (TERMINAL_STATUSES.includes(existing.status)) {
     throw new Error(`Order is already ${existing.status.replace("_", " ")}`);

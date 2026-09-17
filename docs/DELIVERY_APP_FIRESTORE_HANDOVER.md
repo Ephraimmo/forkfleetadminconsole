@@ -1,5 +1,13 @@
 # Delivery (Driver) App ↔ Super Admin Console — Firestore Integration Handover
 
+> **⚠️ Superseded for the order status lifecycle (2026-09-17).** Section 3.3 below describes an
+> `offered → assigned → arrived → picked_up → ...` `status` lifecycle this console briefly implemented
+> before the real driver-app contract was available — it does not match what the actual `fleetdriverhub`
+> driver app writes. **For orders, use `docs/ORDER_WORKFLOW_HANDOVER.md` instead** — it documents the
+> real fields (`driver_status`, `assigned_at`, `arrived_at_restaurant`, etc.) and is what this console's
+> code is now built against. Sections 1, 2, 4, 5 and 6 below (Firebase config, drivers, driverAssignments,
+> live location, notifications, security rules) are unaffected and still apply.
+
 **Firebase project:** `e-comm-bd997`
 **Backend:** Cloud Firestore only. Realtime Database has been fully removed from the
 Super Admin / Operations Console. Any driver-app code still using
@@ -100,6 +108,9 @@ Query pattern: `onSnapshot(collection(db,'driverAssignments'))` filtered by
 index prompt the console shows on first run).
 
 ### 3.3 `orders/{orderId}` — the shared job board
+
+> **⚠️ See the warning at the top of this file — this section is superseded by
+> `docs/ORDER_WORKFLOW_HANDOVER.md`. Kept below only for history.**
 
 Status lifecycle (single source of truth, owned by the console + driver app):
 

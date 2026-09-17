@@ -93,12 +93,12 @@ function LiveMapPage() {
   );
 
   const onTheWay = filteredOrders.filter((o) => o.status === "on_the_way" || o.status === "picked_up").length;
-  const waitingPickup = filteredOrders.filter(
-    (o) =>
-      o.status === "ready" ||
-      o.status === "offered" ||
-      o.status === "assigned" ||
-      o.status === "arrived",
+  // "ready" covers both "needs a driver" and "waiting to accept"; "assigned"
+  // covers both "heading to restaurant" and "at restaurant" — see orderStage()
+  // in dispatch.functions.ts. Legacy "offered"/"arrived" status values (an
+  // earlier console build) are included for backward compatibility.
+  const waitingPickup = filteredOrders.filter((o) =>
+    (["ready", "offered", "assigned", "arrived"] as string[]).includes(o.status),
   ).length;
   const activeDrivers = allDrivers.filter((d) => d.status === "busy" || d.status === "online").length;
   const idleDrivers = allDrivers.filter((d) => d.status === "online").length;
@@ -174,10 +174,11 @@ function LiveMapPage() {
                   <SelectContent>
                     <SelectItem value="active">Active deliveries</SelectItem>
                     <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="ready">Ready</SelectItem>
-                    <SelectItem value="offered">Waiting for driver to accept</SelectItem>
-                    <SelectItem value="assigned">Waiting for driver to arrive</SelectItem>
-                    <SelectItem value="arrived">Arrived at restaurant</SelectItem>
+                    {/* "ready" covers unassigned + waiting-for-driver-to-accept, and
+                        "assigned" covers heading-to-restaurant + at-restaurant — status
+                        alone can't split those further (see orderStage()). */}
+                    <SelectItem value="ready">Ready / awaiting driver acceptance</SelectItem>
+                    <SelectItem value="assigned">Assigned / at restaurant</SelectItem>
                     <SelectItem value="picked_up">Picked up</SelectItem>
                     <SelectItem value="on_the_way">On the way</SelectItem>
                     <SelectItem value="delivered">Delivered</SelectItem>

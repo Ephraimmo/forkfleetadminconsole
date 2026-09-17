@@ -49,7 +49,11 @@ import {
   assignDriver,
   getAuditTrail,
   getDispatchBoard,
+  markArrivedAtRestaurant,
+  orderStage,
+  STAGE_LABEL,
   type DispatchOrder,
+  type OrderStage,
   type OrderStatus,
 } from "@/lib/dispatch.functions";
 import {
@@ -83,24 +87,25 @@ export const Route = createFileRoute("/_authenticated/dispatch")({
   component: DispatchPage,
 });
 
-// "offered" deliberately has next: null — only the driver app may write
-// "assigned" (accept), never a staff action here. "assigned" -> "arrived" DOES
-// have a staff fallback (Mark arrived at restaurant) alongside the driver app.
-const LANES: { key: OrderStatus; label: string; next: OrderStatus | null; icon: typeof Radar }[] = [
-  { key: "ready", label: "Awaiting driver", next: null, icon: PackageCheck },
-  { key: "offered", label: "Waiting for driver to accept", next: null, icon: Send },
-  { key: "assigned", label: "Waiting for driver to arrive", next: "arrived", icon: Bike },
-  { key: "arrived", label: "Driver at restaurant", next: "picked_up", icon: Store },
-  { key: "picked_up", label: "Picked up", next: "on_the_way", icon: Truck },
-  { key: "on_the_way", label: "On the way", next: "delivered", icon: MapPin },
+// Lanes are keyed by the computed admin STAGE, not raw `status` — "ready"
+// alone can't tell "needs a driver" apart from "waiting for driver to
+// accept" (see orderStage() in dispatch.functions.ts). Only
+// "heading_to_restaurant" has a staff action ("arrived", a fallback
+// alongside the driver app's own write) — everything from "at_restaurant"
+// onward is view + cancel only, per docs/ORDER_WORKFLOW_HANDOVER.md.
+const LANES: { key: OrderStage; label: string; canMarkArrived: boolean; icon: typeof Radar }[] = [
+  { key: "unassigned", label: "Needs a driver", canMarkArrived: false, icon: PackageCheck },
+  { key: "waiting_accept", label: STAGE_LABEL.waiting_accept, canMarkArrived: false, icon: Send },
+  {
+    key: "heading_to_restaurant",
+    label: STAGE_LABEL.heading_to_restaurant,
+    canMarkArrived: true,
+    icon: Bike,
+  },
+  { key: "at_restaurant", label: STAGE_LABEL.at_restaurant, canMarkArrived: false, icon: Store },
+  { key: "picked_up", label: STAGE_LABEL.picked_up, canMarkArrived: false, icon: Truck },
+  { key: "on_the_way", label: STAGE_LABEL.on_the_way, canMarkArrived: false, icon: MapPin },
 ];
-
-const nextLabel: Record<string, string> = {
-  arrived: "Mark arrived at restaurant",
-  picked_up: "Mark picked up",
-  on_the_way: "Mark on the way",
-  delivered: "Mark delivered",
-};
 
 function DispatchPage() {
   const [restaurantId, setRestaurantId] = useState("all");
@@ -115,6 +120,7 @@ function DispatchPage() {
   const fetchAudit = useServerFn(getAuditTrail);
   const assign = useServerFn(assignDriver);
   const advance = useServerFn(advanceDelivery);
+  const markArrived = useServerFn(markArrivedAtRestaurant);
 
   const boardQuery = useQuery({
     queryKey: ["dispatch-board", restaurantId],
@@ -167,6 +173,15 @@ function DispatchPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const arrivedMutation = useMutation({
+    mutationFn: (orderId: string) => markArrived({ orderId }),
+    onSuccess: () => {
+      toast.success("Marked arrived at restaurant");
+      invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   function invalidate() {
     for (const key of ["dispatch-board", "drivers", "dispatch-audit", "orders"]) {
       void queryClient.invalidateQueries({ queryKey: [key] });
@@ -182,7 +197,10 @@ function DispatchPage() {
   const activeOrdersByDriver = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const o of orders) {
-      if (o.driver_id && ["assigned", "picked_up", "on_the_way"].includes(o.status)) {
+      // "ready" is included so a driver with an unaccepted offer still
+      // counts against their load (see orderStage(): "ready" + driver_id
+      // set is "waiting_accept", not "unassigned").
+      if (o.driver_id && ["ready", "assigned", "picked_up", "on_the_way"].includes(o.status)) {
         counts[o.driver_id] = (counts[o.driver_id] ?? 0) + 1;
       }
     }
@@ -289,7 +307,7 @@ function DispatchPage() {
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {LANES.map((lane) => {
-                const laneOrders = deliveryOrders.filter((o) => o.status === lane.key);
+                const laneOrders = deliveryOrders.filter((o) => orderStage(o) === lane.key);
                 return (
                   <Card key={lane.key} className="flex flex-col">
                     <CardHeader className="pb-3">
@@ -305,24 +323,21 @@ function DispatchPage() {
                           order={order}
                           canManage={canManage}
                           onViewNotes={() => setNotesOrder(order)}
-                          {...(lane.key === "ready" || lane.key === "offered"
+                          {...(lane.key === "unassigned" || lane.key === "waiting_accept"
                             ? {
                                 onAssign: () => {
                                   setAssigning(order);
                                   setDriverId("");
                                   setEta(String(order.eta_minutes ?? 30));
                                 },
-                                assignLabel: lane.key === "offered" ? "Change driver" : "Assign driver",
+                                assignLabel:
+                                  lane.key === "waiting_accept" ? "Change driver" : "Assign driver",
                               }
                             : {})}
-                          {...(lane.next
+                          {...(lane.canMarkArrived
                             ? {
-                                onAdvance: () =>
-                                  advanceMutation.mutate({
-                                    orderId: order.id,
-                                    nextStatus: lane.next as OrderStatus,
-                                  }),
-                                advanceLabel: nextLabel[lane.next] ?? "Advance",
+                                onAdvance: () => arrivedMutation.mutate(order.id),
+                                advanceLabel: "Mark arrived at restaurant",
                               }
                             : {})}
                           onCancel={() =>
