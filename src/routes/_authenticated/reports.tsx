@@ -105,7 +105,20 @@ function ReportsPage() {
 
   const statusOptions =
     kind === "orders"
-      ? ["all", "pending", "accepted", "preparing", "ready", "assigned", "picked_up", "on_the_way", "delivered", "cancelled", "refunded"]
+      ? [
+          "all",
+          "pending",
+          "accepted",
+          "preparing",
+          "ready",
+          "assigned",
+          "arrived",
+          "picked_up",
+          "on_the_way",
+          "delivered",
+          "cancelled",
+          "refunded",
+        ]
       : kind === "drivers"
       ? ["all", "online", "busy", "offline", "suspended", "pending"]
       : ["all"];

@@ -27,6 +27,10 @@ export type OrderStatus =
   | "preparing"
   | "ready"
   | "assigned"
+  /** Driver has physically reached the restaurant and is waiting for the order
+   *  handover. Gates "picked_up" — staff/driver may not skip straight from
+   *  "assigned" to "picked_up". */
+  | "arrived"
   | "picked_up"
   | "on_the_way"
   | "delivered"
@@ -95,6 +99,7 @@ export interface FirebaseOrder {
   placed_at: string;
   accepted_at: string | null;
   ready_at: string | null;
+  arrived_at: string | null;
   picked_up_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
@@ -308,7 +313,7 @@ export function orderType(o: { order_type?: OrderType | null }): OrderType {
   return o.order_type === "pickup" ? "pickup" : "delivery";
 }
 
-const DELIVERY_ONLY_STATUSES: OrderStatus[] = ["assigned", "on_the_way"];
+const DELIVERY_ONLY_STATUSES: OrderStatus[] = ["assigned", "arrived", "on_the_way"];
 
 export async function setFirebaseOrderStatus(input: {
   orderId: string;
@@ -340,6 +345,9 @@ export async function setFirebaseOrderStatus(input: {
     case "assigned":
       // Kitchen may move to "assigned" before a driver is chosen; dispatch will
       // attach driver details when they claim the order.
+      break;
+    case "arrived":
+      patch.arrived_at = ts;
       break;
     case "picked_up":
       patch.picked_up_at = ts;
@@ -553,6 +561,7 @@ export async function createFirebaseOrder(input: {
     placed_at: ts,
     accepted_at: null,
     ready_at: null,
+    arrived_at: null,
     picked_up_at: null,
     delivered_at: null,
     cancelled_at: null,

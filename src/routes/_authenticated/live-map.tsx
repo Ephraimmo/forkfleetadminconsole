@@ -81,7 +81,10 @@ function LiveMapPage() {
     () =>
       allOrders.filter((o) => {
         if (restaurantFilter !== "all" && o.restaurant_id !== restaurantFilter) return false;
-        if (statusFilter === "active" && !["ready", "assigned", "picked_up", "on_the_way"].includes(o.status))
+        if (
+          statusFilter === "active" &&
+          !["ready", "assigned", "arrived", "picked_up", "on_the_way"].includes(o.status)
+        )
           return false;
         if (search && !o.order_number.toLowerCase().includes(search.toLowerCase())) return false;
         return true;
@@ -90,7 +93,9 @@ function LiveMapPage() {
   );
 
   const onTheWay = filteredOrders.filter((o) => o.status === "on_the_way" || o.status === "picked_up").length;
-  const waitingPickup = filteredOrders.filter((o) => o.status === "ready" || o.status === "assigned").length;
+  const waitingPickup = filteredOrders.filter(
+    (o) => o.status === "ready" || o.status === "assigned" || o.status === "arrived",
+  ).length;
   const activeDrivers = allDrivers.filter((d) => d.status === "busy" || d.status === "online").length;
   const idleDrivers = allDrivers.filter((d) => d.status === "online").length;
   const issues = allDrivers.filter((d) => d.status === "suspended" || d.status === "pending" || !d.is_verified).length;
@@ -167,6 +172,7 @@ function LiveMapPage() {
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="ready">Ready</SelectItem>
                     <SelectItem value="assigned">Assigned</SelectItem>
+                    <SelectItem value="arrived">Arrived at restaurant</SelectItem>
                     <SelectItem value="picked_up">Picked up</SelectItem>
                     <SelectItem value="on_the_way">On the way</SelectItem>
                     <SelectItem value="delivered">Delivered</SelectItem>

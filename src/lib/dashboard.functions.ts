@@ -102,7 +102,16 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const ms = (days: number) => days * 86_400_000;
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 
-const IN_FLIGHT = ["pending", "accepted", "preparing", "ready", "assigned", "picked_up", "on_the_way"];
+const IN_FLIGHT = [
+  "pending",
+  "accepted",
+  "preparing",
+  "ready",
+  "assigned",
+  "arrived",
+  "picked_up",
+  "on_the_way",
+];
 const SETTLED = ["delivered", "refunded"];
 
 function pluck<T extends object, K extends keyof T>(arr: T[], key: K): Array<T[K]> {

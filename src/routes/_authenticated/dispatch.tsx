@@ -13,6 +13,7 @@ import {
   PackageCheck,
   Radar,
   ShoppingBag,
+  Store,
   Truck,
   XCircle,
 } from "lucide-react";
@@ -83,12 +84,14 @@ export const Route = createFileRoute("/_authenticated/dispatch")({
 
 const LANES: { key: OrderStatus; label: string; next: OrderStatus | null; icon: typeof Radar }[] = [
   { key: "ready", label: "Awaiting driver", next: null, icon: PackageCheck },
-  { key: "assigned", label: "Driver assigned", next: "picked_up", icon: Bike },
+  { key: "assigned", label: "Driver assigned", next: "arrived", icon: Bike },
+  { key: "arrived", label: "Driver at restaurant", next: "picked_up", icon: Store },
   { key: "picked_up", label: "Picked up", next: "on_the_way", icon: Truck },
   { key: "on_the_way", label: "On the way", next: "delivered", icon: MapPin },
 ];
 
 const nextLabel: Record<string, string> = {
+  arrived: "Mark arrived at restaurant",
   picked_up: "Mark picked up",
   on_the_way: "Mark on the way",
   delivered: "Mark delivered",
@@ -279,7 +282,7 @@ function DispatchPage() {
               </CardContent>
             </Card>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
               {LANES.map((lane) => {
                 const laneOrders = deliveryOrders.filter((o) => o.status === lane.key);
                 return (

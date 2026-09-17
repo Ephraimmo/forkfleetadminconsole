@@ -113,6 +113,7 @@ const STATUSES: OrderStatus[] = [
   "preparing",
   "ready",
   "assigned",
+  "arrived",
   "picked_up",
   "on_the_way",
   "delivered",
@@ -127,6 +128,7 @@ const statusTone: Record<string, string> = {
   preparing: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   ready: "bg-amber-500/15 text-amber-400 border-amber-500/25",
   assigned: "bg-sky-500/15 text-sky-400 border-sky-500/25",
+  arrived: "bg-cyan-500/15 text-cyan-400 border-cyan-500/25",
   picked_up: "bg-sky-500/15 text-sky-400 border-sky-500/25",
   on_the_way: "bg-indigo-500/15 text-indigo-400 border-indigo-500/25",
   delivered: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
@@ -140,12 +142,14 @@ const statusTone: Record<string, string> = {
 //  - accepted    → kitchen picks up
 //  - preparing   → kitchen marks ready
 //  - ready       → dispatch ASSIGNS DRIVER (only assignable status)
-//  - assigned    → driver picks up
+//  - assigned    → driver arrives at the restaurant
+//  - arrived     → driver picks up the order (gates picked_up — cannot be skipped)
 //  - picked_up   → driver starts delivery
 //  - on_the_way  → driver delivers
 //  - delivered/rejected/cancelled/refunded: terminal
 const NEXT_STEP: Partial<Record<OrderStatus, OrderStatus>> = {
-  assigned: "picked_up",
+  assigned: "arrived",
+  arrived: "picked_up",
   picked_up: "on_the_way",
   on_the_way: "delivered",
 };
@@ -167,6 +171,7 @@ function nextStepLabel(order: DispatchOrder, next: OrderStatus): string {
     if (next === "picked_up") return "Mark collected";
     if (next === "delivered") return "Complete";
   }
+  if (next === "arrived") return "Mark arrived at restaurant";
   return next.replace("_", " ");
 }
 
@@ -374,6 +379,7 @@ function OrdersPage() {
               <FlowStep tone={statusTone["ready"]}>Ready</FlowStep> →
               <span className="font-medium">assign driver</span> →
               <FlowStep tone={statusTone["assigned"]}>Assigned</FlowStep> →
+              <FlowStep tone={statusTone["arrived"]}>Arrived</FlowStep> →
               <FlowStep tone={statusTone["on_the_way"]}>On the way</FlowStep> →
               <FlowStep tone={statusTone["delivered"]}>Delivered</FlowStep>
               <span className="mx-1">•</span>
@@ -886,7 +892,8 @@ function OrdersCards({
     else if (o.status === "accepted") groups[1]!.orders.push(o);
     else if (o.status === "preparing") groups[2]!.orders.push(o);
     else if (o.status === "ready") groups[3]!.orders.push(o);
-    else if (o.status === "assigned" || o.status === "picked_up") groups[4]!.orders.push(o);
+    else if (o.status === "assigned" || o.status === "arrived" || o.status === "picked_up")
+      groups[4]!.orders.push(o);
     else if (o.status === "on_the_way") groups[5]!.orders.push(o);
     else if (o.status === "delivered") groups[6]!.orders.push(o);
     else groups[7]!.orders.push(o);

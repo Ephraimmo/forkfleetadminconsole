@@ -10,7 +10,8 @@
 //   accepted     -> kitchen starts cooking   (Orders page "Send to kitchen" or auto)
 //   preparing    -> kitchen marks ready
 //   ready        -> dispatcher ASSIGNS DRIVER  ← only assignable status
-//   assigned     -> driver picks up
+//   assigned     -> driver arrives at the restaurant
+//   arrived      -> driver picks up the order
 //   picked_up    -> driver marks on the way
 //   on_the_way   -> driver marks delivered
 //   delivered / rejected / cancelled / refunded are terminal.
@@ -51,6 +52,7 @@ export interface DispatchOrder {
   /** "delivery" needs a driver; "pickup" is collected by the customer. */
   order_type: OrderType;
   placed_at: string;
+  arrived_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
   rejected_at: string | null;
@@ -121,9 +123,9 @@ export interface AuditRow {
 }
 
 // Orders that show on the Dispatch board (ready-for-pickup + in-flight)
-const DISPATCH_STATUSES: OrderStatus[] = ["ready", "assigned", "picked_up", "on_the_way"];
+const DISPATCH_STATUSES: OrderStatus[] = ["ready", "assigned", "arrived", "picked_up", "on_the_way"];
 // Active (driver already attached)
-const ACTIVE_STATUSES: OrderStatus[] = ["assigned", "picked_up", "on_the_way"];
+const ACTIVE_STATUSES: OrderStatus[] = ["assigned", "arrived", "picked_up", "on_the_way"];
 // Terminal statuses that should never be acted on
 const TERMINAL_STATUSES: OrderStatus[] = ["delivered", "rejected", "cancelled", "refunded"];
 
@@ -135,6 +137,7 @@ function toDispatchOrder(p: OrderPayload): DispatchOrder {
     status: o.status,
     order_type: orderType(o),
     placed_at: o.placed_at,
+    arrived_at: o.arrived_at,
     delivered_at: o.delivered_at,
     cancelled_at: o.cancelled_at,
     rejected_at: o.rejected_at ?? null,
@@ -405,7 +408,13 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
 
 type AdvanceInput = { orderId: string; nextStatus: OrderStatus; etaMinutes?: number };
 
-const DISPATCH_TRANSITIONS: OrderStatus[] = ["picked_up", "on_the_way", "delivered", "cancelled"];
+const DISPATCH_TRANSITIONS: OrderStatus[] = [
+  "arrived",
+  "picked_up",
+  "on_the_way",
+  "delivered",
+  "cancelled",
+];
 
 export async function advanceDelivery(arg: AdvanceInput | { data: AdvanceInput }) {
   const input = unwrap(arg)!;

@@ -104,15 +104,27 @@ index prompt the console shows on first run).
 Status lifecycle (single source of truth, owned by the console + driver app):
 
 ```
-pending → accepted → preparing → ready → assigned → picked_up → on_the_way → delivered
+pending → accepted → preparing → ready → assigned → arrived → picked_up → on_the_way → delivered
                                    ↘ rejected / cancelled / refunded (terminal)
 ```
 
+**BREAKING CHANGE (2026-09-17): new `arrived` status inserted between `assigned` and
+`picked_up`.** The console's ops UI now blocks staff from marking an order `picked_up`
+until it has gone through `arrived` — an order stuck at `assigned` with no way to reach
+`picked_up` almost always means the driver app hasn't shipped the write below yet.
+
 - `ready` is the only status at which the console assigns a driver. Assignment sets
   `driver_id` and status `assigned`.
-- **Driver app may only advance:** `assigned → picked_up → on_the_way → delivered`, and
-  only when `order.driver_id === myDriverId`. Never write terminal statuses
-  (`cancelled`, `refunded`, `rejected`) — those belong to the console.
+- **Driver app may only advance:** `assigned → arrived → picked_up → on_the_way →
+  delivered`, and only when `order.driver_id === myDriverId`. Never write terminal
+  statuses (`cancelled`, `refunded`, `rejected`) — those belong to the console.
+- **`arrived`**: write this the moment the driver taps "I've arrived at the
+  restaurant" in the driver app, **before** they may write `picked_up`. Patch:
+  `{ status: "arrived", arrived_at: ISO string, updated_at: ISO string }`. The
+  console will also accept a manual "Mark arrived at restaurant" override from staff
+  (dispatch board / orders page) for cases where the driver app can't reach this step
+  (offline, not yet installed, etc.) — don't rely on that as your primary path, it's a
+  fallback.
 - Every status write must append a timeline entry:
   `timeline: [{ status, at: ISO string, note }]`.
 - `order_type: "delivery" | "pickup"`. Pickup orders never get a driver — ignore them.
@@ -211,7 +223,10 @@ not equal the signed-in uid.
    console's Driver Management list in real time.
 4. Driver can only go online after console approval (`is_verified && is_active`).
 5. Assigned orders appear live and advance only through
-   `picked_up → on_the_way → delivered`, each with a timeline entry.
+   `arrived → picked_up → on_the_way → delivered`, each with a timeline entry. The
+   driver app must expose an explicit "I've arrived at the restaurant" action that
+   writes `status: "arrived"` — the console will not let the order reach `picked_up`
+   without it.
 6. Location updates show the driver moving on the console's Live Map.
 7. Cash collection writes into `orders/{id}.payment` and shows on the console's
    Payments page.
