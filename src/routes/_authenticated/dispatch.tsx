@@ -88,16 +88,21 @@ export const Route = createFileRoute("/_authenticated/dispatch")({
 
 // Lanes are keyed by the computed admin STAGE, not raw `status` — "ready"
 // alone can't tell "needs a driver" apart from "waiting for driver to
-// accept" (see orderStage() in dispatch.functions.ts). No lane from
-// "heading_to_restaurant" onward has a staff action (removed 2026-09-17) —
-// they're view + cancel only, driven entirely by the driver app.
-const LANES: { key: OrderStage; label: string; icon: typeof Radar }[] = [
-  { key: "unassigned", label: "Needs a driver", icon: PackageCheck },
-  { key: "waiting_accept", label: STAGE_LABEL.waiting_accept, icon: Send },
-  { key: "heading_to_restaurant", label: STAGE_LABEL.heading_to_restaurant, icon: Bike },
-  { key: "at_restaurant", label: STAGE_LABEL.at_restaurant, icon: Store },
-  { key: "picked_up", label: STAGE_LABEL.picked_up, icon: Truck },
-  { key: "on_the_way", label: STAGE_LABEL.on_the_way, icon: MapPin },
+// accept" (see orderStage() in dispatch.functions.ts). Only "at_restaurant"
+// has a staff action ("Mark picked up", a fallback alongside the driver
+// app's own PIN-verified pickup) — every other lane is view + cancel only.
+const LANES: { key: OrderStage; label: string; canMarkPickedUp: boolean; icon: typeof Radar }[] = [
+  { key: "unassigned", label: "Needs a driver", canMarkPickedUp: false, icon: PackageCheck },
+  { key: "waiting_accept", label: STAGE_LABEL.waiting_accept, canMarkPickedUp: false, icon: Send },
+  {
+    key: "heading_to_restaurant",
+    label: STAGE_LABEL.heading_to_restaurant,
+    canMarkPickedUp: false,
+    icon: Bike,
+  },
+  { key: "at_restaurant", label: STAGE_LABEL.at_restaurant, canMarkPickedUp: true, icon: Store },
+  { key: "picked_up", label: STAGE_LABEL.picked_up, canMarkPickedUp: false, icon: Truck },
+  { key: "on_the_way", label: STAGE_LABEL.on_the_way, canMarkPickedUp: false, icon: MapPin },
 ];
 
 function DispatchPage() {
@@ -315,6 +320,16 @@ function DispatchPage() {
                                 },
                                 assignLabel:
                                   lane.key === "waiting_accept" ? "Change driver" : "Assign driver",
+                              }
+                            : {})}
+                          {...(lane.canMarkPickedUp
+                            ? {
+                                onAdvance: () =>
+                                  advanceMutation.mutate({
+                                    orderId: order.id,
+                                    nextStatus: "picked_up",
+                                  }),
+                                advanceLabel: "Mark picked up",
                               }
                             : {})}
                           onCancel={() =>

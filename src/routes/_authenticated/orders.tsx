@@ -158,23 +158,29 @@ const STAGE_TONE: Record<OrderStage, string> = {
 //                           is re-offering a different driver.
 //  - heading_to_restaurant → driver app writes "arrived at restaurant". No
 //                           staff override shown (removed 2026-09-17) — view
-//                           + cancel only, same as everything after it.
-//  - at_restaurant        → driver verifies a pickup code and marks picked
-//                           up in their own app. No staff override.
+//                           + cancel only.
+//  - at_restaurant        → normally the driver verifies a pickup code and
+//                           marks picked up in their own app, but staff also
+//                           have a manual "Mark picked up" fallback for this
+//                           exact stage (re-added 2026-09-17).
 //  - picked_up / on_the_way / at_customer / delivered: driver-app only.
 //  - rejected/cancelled/refunded: terminal.
 type NextAction = { kind: "advance"; next: OrderStatus; label: string };
 
 /** The one staff-actionable next step for an order, if any — honouring
  *  fulfilment type. Pickup orders skip drivers entirely: ready → picked_up
- *  (collected) → delivered (closed). Delivery orders have no staff-facing
- *  action at all — every step from "assigned" onward is driver-app only. */
+ *  (collected) → delivered (closed). Delivery orders have exactly one
+ *  fallback action ("Mark picked up", once the driver has reached the
+ *  restaurant) — every other step is driver-app only. */
 function nextActionFor(order: DispatchOrder): NextAction | null {
   if (order.order_type === "pickup") {
     if (order.status === "ready") return { kind: "advance", next: "picked_up", label: "Mark collected" };
     if (order.status === "picked_up") return { kind: "advance", next: "delivered", label: "Complete" };
+    return null;
   }
-  return null;
+  return orderStage(order) === "at_restaurant"
+    ? { kind: "advance", next: "picked_up", label: "Mark picked up" }
+    : null;
 }
 
 const money = (value: number) =>
@@ -387,9 +393,9 @@ function OrdersPage() {
               <span className="mx-1">•</span>
               <FlowStep tone={STAGE_TONE["rejected"]}>Rejected</FlowStep>
               <span className="ml-auto">
-                Staff can only reassign the driver while <b>Waiting to accept</b> — every other step
-                from there on (accept, arrival, pickup, on the way, delivered) comes only from the
-                driver app.
+                Staff can reassign the driver while <b>Waiting to accept</b>, and can manually mark{" "}
+                <b>Picked up</b> once the order is <b>At restaurant</b> — driver acceptance and
+                arrival can only come from the driver app.
               </span>
             </div>
 

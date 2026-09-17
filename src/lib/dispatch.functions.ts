@@ -23,11 +23,12 @@
 //                   override in the UI (removed 2026-09-17) — the console
 //                   still exposes markArrivedAtRestaurant() below as a
 //                   fallback mutation, but nothing currently calls it.
-//   assigned + driver_status "arrived_at_restaurant" -> driver verifies a
-//                   pickup code and taps "Picked up" in their own app,
-//                   writing `status: "picked_up"`. Per the handover doc this
-//                   is driver-exclusive (PIN verification) — there is
-//                   deliberately no staff override for it.
+//   assigned + driver_status "arrived_at_restaurant" -> normally the driver
+//                   verifies a pickup code and taps "Picked up" in their own
+//                   app, writing `status: "picked_up"`. Staff also have a
+//                   manual "Mark picked up" fallback for this step (re-added
+//                   2026-09-17), shown only once the order has reached this
+//                   exact stage — not before.
 //   picked_up    -> driver marks on the way (`status: "on_the_way"`) — no
 //                   staff override; view + cancel only from here on.
 //   on_the_way   -> driver marks delivered (`status: "delivered"`) — no
@@ -572,12 +573,12 @@ type AdvanceInput = { orderId: string; nextStatus: OrderStatus; etaMinutes?: num
 // Pickup orders have no driver at all — staff drive the whole flow manually:
 // ready → picked_up (customer collected) → delivered (closed), or cancelled.
 const PICKUP_TRANSITIONS: OrderStatus[] = ["picked_up", "delivered", "cancelled"];
-// Delivery orders: per docs/ORDER_WORKFLOW_HANDOVER.md, "picked_up" onward is
-// driver-app-exclusive (pickup itself requires a PIN the driver verifies) —
-// staff can only cancel through this generic mutation. "Mark arrived at
-// restaurant" is a separate, dedicated fallback (markArrivedAtRestaurant
-// above) precisely because it does NOT go through `status` at all.
-const DELIVERY_TRANSITIONS: OrderStatus[] = ["cancelled"];
+// Delivery orders: per docs/ORDER_WORKFLOW_HANDOVER.md, pickup normally
+// requires the driver to verify a PIN in their own app — but staff also have
+// a manual "Mark picked up" fallback for when the driver is at the
+// restaurant and hasn't (yet) done that (re-added 2026-09-17). Everything
+// after pickup (on the way, delivered) stays driver-app-only.
+const DELIVERY_TRANSITIONS: OrderStatus[] = ["picked_up", "cancelled"];
 
 export async function advanceDelivery(arg: AdvanceInput | { data: AdvanceInput }) {
   const input = unwrap(arg)!;
@@ -589,8 +590,11 @@ export async function advanceDelivery(arg: AdvanceInput | { data: AdvanceInput }
     throw new Error(
       isPickup
         ? "Pickup orders can only be marked collected, completed or cancelled"
-        : "Delivery orders can only be cancelled from this screen — pickup, on the way and delivered are written by the driver app",
+        : "Delivery orders can only be marked picked up or cancelled from this screen — on the way and delivered are written by the driver app",
     );
+  }
+  if (input.nextStatus !== "cancelled" && !existing.driver_id && !isPickup) {
+    throw new Error("Assign a driver before moving the delivery forward");
   }
   if (TERMINAL_STATUSES.includes(existing.status)) {
     throw new Error(`Order is already ${existing.status.replace("_", " ")}`);
