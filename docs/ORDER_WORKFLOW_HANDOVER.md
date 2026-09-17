@@ -267,12 +267,13 @@ useful if this doc drifts from the code again.
 - **Field names actually used:** `driver_status`, `assigned_at`, `arrived_at_restaurant`,
   `picked_up_at`, `on_the_way_at`, `arrived_at_customer`, `delivered_at` — see `FirebaseOrder` in
   `src/lib/orders.firebase.ts`.
-- **Staff fallback for Stage 3 (arrived at restaurant):** unlike the doc's strict view+cancel-only list,
-  this console gives staff a manual "Mark arrived at restaurant" action (writes `driver_status` +
-  `arrived_at_restaurant`, never touches `status`) — added because orders were getting permanently
-  stuck at Stage 2 while the driver app's own write wasn't shipped yet. There is **no** equivalent
-  fallback for driver acceptance (Stage 1 → 2) or for anything from Stage 4 onward — those stay
-  strictly driver-app-only, matching this doc.
+- **No staff override anywhere in the UI**, matching this doc exactly — every stage from "waiting to
+  accept" onward (Stages 1–7) is driver-app-only. Staff's only lever at all is reassigning to a
+  different driver while still Stage 1 (`assignDriver` / "Change driver"). A "Mark arrived at
+  restaurant" staff fallback existed briefly (added, then removed, both 2026-09-17) after orders got
+  permanently stuck at Stage 2 while the driver app's own write wasn't shipped yet — the underlying
+  mutation (`markArrivedAtRestaurant` in `orders.firebase.ts` / `dispatch.functions.ts`) is still there,
+  unused, in case a fallback is wanted again.
 - **Firestore rules:** `firestore.rules` in this repo grants a signed-in driver read/update access to
   orders where `driver_id` matches their own uid, and create/update access to their own `drivers/{uid}`
   profile — required for the driver app to write any of the fields above. See

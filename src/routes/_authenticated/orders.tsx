@@ -75,7 +75,6 @@ import {
   assignDriver,
   getAuditTrail,
   listOrders,
-  markArrivedAtRestaurant,
   orderStage,
   rejectOrder,
   STAGE_LABEL,
@@ -157,29 +156,25 @@ const STAGE_TONE: Record<OrderStage, string> = {
 //                           `status` stays "ready")
 //  - waiting_accept       → driver app: driver accepts. Staff's only lever
 //                           is re-offering a different driver.
-//  - heading_to_restaurant → normally the driver app writes "arrived at
-//                           restaurant", but staff also have a manual
-//                           fallback (re-added 2026-09-17 — orders were
-//                           getting permanently stuck while the driver app's
-//                           write wasn't shipped).
+//  - heading_to_restaurant → driver app writes "arrived at restaurant". No
+//                           staff override shown (removed 2026-09-17) — view
+//                           + cancel only, same as everything after it.
 //  - at_restaurant        → driver verifies a pickup code and marks picked
-//                           up in their own app. No staff override — this
-//                           and everything after it is view + cancel only.
+//                           up in their own app. No staff override.
 //  - picked_up / on_the_way / at_customer / delivered: driver-app only.
 //  - rejected/cancelled/refunded: terminal.
-type NextAction = { kind: "advance"; next: OrderStatus; label: string } | { kind: "arrived" };
+type NextAction = { kind: "advance"; next: OrderStatus; label: string };
 
 /** The one staff-actionable next step for an order, if any — honouring
  *  fulfilment type. Pickup orders skip drivers entirely: ready → picked_up
- *  (collected) → delivered (closed). Delivery orders have exactly one
- *  fallback action (marking arrived); everything else is driver-app only. */
+ *  (collected) → delivered (closed). Delivery orders have no staff-facing
+ *  action at all — every step from "assigned" onward is driver-app only. */
 function nextActionFor(order: DispatchOrder): NextAction | null {
   if (order.order_type === "pickup") {
     if (order.status === "ready") return { kind: "advance", next: "picked_up", label: "Mark collected" };
     if (order.status === "picked_up") return { kind: "advance", next: "delivered", label: "Complete" };
-    return null;
   }
-  return orderStage(order) === "heading_to_restaurant" ? { kind: "arrived" } : null;
+  return null;
 }
 
 const money = (value: number) =>
@@ -207,7 +202,6 @@ function OrdersPage() {
   const fetchAudit = useServerFn(getAuditTrail);
   const assign = useServerFn(assignDriver);
   const advance = useServerFn(advanceDelivery);
-  const markArrived = useServerFn(markArrivedAtRestaurant);
   const accept = useServerFn(acceptOrder);
   const reject = useServerFn(rejectOrder);
 
@@ -272,15 +266,6 @@ function OrdersPage() {
     mutationFn: (vars: { orderId: string; nextStatus: OrderStatus }) => advance(vars),
     onSuccess: (_r, vars) => {
       toast.success(`Order ${vars.nextStatus.replace("_", " ")}`);
-      invalidate();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const arrivedMutation = useMutation({
-    mutationFn: (orderId: string) => markArrived({ orderId }),
-    onSuccess: () => {
-      toast.success("Marked arrived at restaurant");
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -402,9 +387,9 @@ function OrdersPage() {
               <span className="mx-1">•</span>
               <FlowStep tone={STAGE_TONE["rejected"]}>Rejected</FlowStep>
               <span className="ml-auto">
-                Staff can reassign the driver while <b>Waiting to accept</b>, and can manually mark{" "}
-                <b>At restaurant</b> as a fallback while <b>Heading to restaurant</b> — everything
-                else (accept, pickup, on the way, delivered) can only come from the driver app.
+                Staff can only reassign the driver while <b>Waiting to accept</b> — every other step
+                from there on (accept, arrival, pickup, on the way, delivered) comes only from the
+                driver app.
               </span>
             </div>
 
@@ -432,7 +417,6 @@ function OrdersPage() {
                     onAdvance={(orderId, next) =>
                       advanceMutation.mutate({ orderId, nextStatus: next })
                     }
-                    onMarkArrived={(orderId) => arrivedMutation.mutate(orderId)}
                     onAccept={(id) => acceptMutation.mutate(id)}
                     onReject={(o) => setRejectTarget(o)}
                     onTrail={setTrailOrder}
@@ -442,7 +426,6 @@ function OrdersPage() {
                       acceptMutation.isPending ||
                       rejectMutation.isPending ||
                       advanceMutation.isPending ||
-                      arrivedMutation.isPending ||
                       assignMutation.isPending
                     }
                   />
@@ -457,7 +440,6 @@ function OrdersPage() {
                     onAdvance={(orderId, next) =>
                       advanceMutation.mutate({ orderId, nextStatus: next })
                     }
-                    onMarkArrived={(orderId) => arrivedMutation.mutate(orderId)}
                     onAccept={(id) => acceptMutation.mutate(id)}
                     onReject={(o) => setRejectTarget(o)}
                     onTrail={setTrailOrder}
@@ -467,7 +449,6 @@ function OrdersPage() {
                       acceptMutation.isPending ||
                       rejectMutation.isPending ||
                       advanceMutation.isPending ||
-                      arrivedMutation.isPending ||
                       assignMutation.isPending
                     }
                   />
@@ -669,7 +650,6 @@ function OrdersTable({
   canManage,
   onAssign,
   onAdvance,
-  onMarkArrived,
   onAccept,
   onReject,
   onTrail,
@@ -684,7 +664,6 @@ function OrdersTable({
   canManage: boolean;
   onAssign: (orderId: string, driverId: string) => void;
   onAdvance: (orderId: string, next: OrderStatus) => void;
-  onMarkArrived: (orderId: string) => void;
   onAccept: (orderId: string) => void;
   onReject: (order: DispatchOrder) => void;
   onTrail: (order: DispatchOrder) => void;
@@ -799,7 +778,7 @@ function OrdersTable({
                         </Button>
                       </>
                     )}
-                    {canManage && action?.kind === "advance" && (
+                    {canManage && action && (
                       <Button
                         size="sm"
                         variant="secondary"
@@ -807,16 +786,6 @@ function OrdersTable({
                         disabled={isPending}
                       >
                         {action.label}
-                      </Button>
-                    )}
-                    {canManage && action?.kind === "arrived" && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => onMarkArrived(order.id)}
-                        disabled={isPending}
-                      >
-                        Mark arrived at restaurant
                       </Button>
                     )}
                     {hasNotes && (
@@ -919,7 +888,6 @@ function OrdersCards({
   canManage,
   onAssign,
   onAdvance,
-  onMarkArrived,
   onAccept,
   onReject,
   onTrail,
@@ -934,7 +902,6 @@ function OrdersCards({
   canManage: boolean;
   onAssign: (orderId: string, driverId: string) => void;
   onAdvance: (orderId: string, next: OrderStatus) => void;
-  onMarkArrived: (orderId: string) => void;
   onAccept: (orderId: string) => void;
   onReject: (order: DispatchOrder) => void;
   onTrail: (order: DispatchOrder) => void;
@@ -988,7 +955,6 @@ function OrdersCards({
                   canManage={canManage}
                   onAssign={onAssign}
                   onAdvance={onAdvance}
-                  onMarkArrived={onMarkArrived}
                   onAccept={onAccept}
                   onReject={onReject}
                   onTrail={onTrail}
@@ -1012,7 +978,6 @@ function OrderCard({
   canManage,
   onAssign,
   onAdvance,
-  onMarkArrived,
   onAccept,
   onReject,
   onTrail,
@@ -1027,7 +992,6 @@ function OrderCard({
   canManage: boolean;
   onAssign: (orderId: string, driverId: string) => void;
   onAdvance: (orderId: string, next: OrderStatus) => void;
-  onMarkArrived: (orderId: string) => void;
   onAccept: (orderId: string) => void;
   onReject: (order: DispatchOrder) => void;
   onTrail: (order: DispatchOrder) => void;
@@ -1212,7 +1176,7 @@ function OrderCard({
               </Select>
             );
           })()}
-        {canManage && action?.kind === "advance" && (
+        {canManage && action && (
           <Button
             size="sm"
             className="flex-1"
@@ -1220,16 +1184,6 @@ function OrderCard({
             disabled={isPending}
           >
             {action.label}
-          </Button>
-        )}
-        {canManage && action?.kind === "arrived" && (
-          <Button
-            size="sm"
-            className="flex-1"
-            onClick={() => onMarkArrived(order.id)}
-            disabled={isPending}
-          >
-            Mark arrived at restaurant
           </Button>
         )}
         {hasNotes && (

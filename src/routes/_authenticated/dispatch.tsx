@@ -49,7 +49,6 @@ import {
   assignDriver,
   getAuditTrail,
   getDispatchBoard,
-  markArrivedAtRestaurant,
   orderStage,
   STAGE_LABEL,
   type DispatchOrder,
@@ -89,22 +88,16 @@ export const Route = createFileRoute("/_authenticated/dispatch")({
 
 // Lanes are keyed by the computed admin STAGE, not raw `status` — "ready"
 // alone can't tell "needs a driver" apart from "waiting for driver to
-// accept" (see orderStage() in dispatch.functions.ts). Only
-// "heading_to_restaurant" has a staff action ("arrived", a fallback
-// alongside the driver app's own write) — everything from "at_restaurant"
-// onward is view + cancel only, per docs/ORDER_WORKFLOW_HANDOVER.md.
-const LANES: { key: OrderStage; label: string; canMarkArrived: boolean; icon: typeof Radar }[] = [
-  { key: "unassigned", label: "Needs a driver", canMarkArrived: false, icon: PackageCheck },
-  { key: "waiting_accept", label: STAGE_LABEL.waiting_accept, canMarkArrived: false, icon: Send },
-  {
-    key: "heading_to_restaurant",
-    label: STAGE_LABEL.heading_to_restaurant,
-    canMarkArrived: true,
-    icon: Bike,
-  },
-  { key: "at_restaurant", label: STAGE_LABEL.at_restaurant, canMarkArrived: false, icon: Store },
-  { key: "picked_up", label: STAGE_LABEL.picked_up, canMarkArrived: false, icon: Truck },
-  { key: "on_the_way", label: STAGE_LABEL.on_the_way, canMarkArrived: false, icon: MapPin },
+// accept" (see orderStage() in dispatch.functions.ts). No lane from
+// "heading_to_restaurant" onward has a staff action (removed 2026-09-17) —
+// they're view + cancel only, driven entirely by the driver app.
+const LANES: { key: OrderStage; label: string; icon: typeof Radar }[] = [
+  { key: "unassigned", label: "Needs a driver", icon: PackageCheck },
+  { key: "waiting_accept", label: STAGE_LABEL.waiting_accept, icon: Send },
+  { key: "heading_to_restaurant", label: STAGE_LABEL.heading_to_restaurant, icon: Bike },
+  { key: "at_restaurant", label: STAGE_LABEL.at_restaurant, icon: Store },
+  { key: "picked_up", label: STAGE_LABEL.picked_up, icon: Truck },
+  { key: "on_the_way", label: STAGE_LABEL.on_the_way, icon: MapPin },
 ];
 
 function DispatchPage() {
@@ -120,7 +113,6 @@ function DispatchPage() {
   const fetchAudit = useServerFn(getAuditTrail);
   const assign = useServerFn(assignDriver);
   const advance = useServerFn(advanceDelivery);
-  const markArrived = useServerFn(markArrivedAtRestaurant);
 
   const boardQuery = useQuery({
     queryKey: ["dispatch-board", restaurantId],
@@ -168,15 +160,6 @@ function DispatchPage() {
     mutationFn: (vars: { orderId: string; nextStatus: OrderStatus }) => advance({ data: vars }),
     onSuccess: (_r, vars) => {
       toast.success(`Delivery ${vars.nextStatus.replace("_", " ")}`);
-      invalidate();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const arrivedMutation = useMutation({
-    mutationFn: (orderId: string) => markArrived({ orderId }),
-    onSuccess: () => {
-      toast.success("Marked arrived at restaurant");
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -332,12 +315,6 @@ function DispatchPage() {
                                 },
                                 assignLabel:
                                   lane.key === "waiting_accept" ? "Change driver" : "Assign driver",
-                              }
-                            : {})}
-                          {...(lane.canMarkArrived
-                            ? {
-                                onAdvance: () => arrivedMutation.mutate(order.id),
-                                advanceLabel: "Mark arrived at restaurant",
                               }
                             : {})}
                           onCancel={() =>

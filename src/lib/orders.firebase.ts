@@ -483,10 +483,13 @@ export async function assignFirebaseDriver(input: {
 }
 
 /**
- * Staff fallback for "the driver has reached the restaurant" — mirrors what
- * the driver app itself writes on its "Arrived at restaurant" action.
- * Deliberately does NOT touch `status` (stays "assigned"), matching the real
- * contract: only `driver_status` and `arrived_at_restaurant` change here.
+ * Fallback for "the driver has reached the restaurant" — mirrors what the
+ * driver app itself writes on its "Arrived at restaurant" action. Deliberately
+ * does NOT touch `status` (stays "assigned"), matching the real contract:
+ * only `driver_status` and `arrived_at_restaurant` change here.
+ *
+ * Not currently exposed as a staff-facing button anywhere in the console
+ * (removed 2026-09-17) — kept for callers that may need it later.
  */
 export async function markArrivedAtRestaurant(input: {
   orderId: string;

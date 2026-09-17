@@ -19,12 +19,10 @@
 //                   to force this — only reassignment (above).
 //   assigned     -> driver app writes `driver_status: "arrived_at_restaurant"`
 //                   when the driver reaches the restaurant (`status` stays
-//                   "assigned" — it is NOT a `status` value). Staff also have
-//                   a manual "Mark arrived at restaurant" fallback for this
-//                   one step (re-added 2026-09-17 — orders were getting
-//                   permanently stuck here while the driver app's write
-//                   wasn't shipped yet). This fallback writes the SAME
-//                   fields the driver app would, never a fake `status`.
+//                   "assigned" — it is NOT a `status` value). No staff
+//                   override in the UI (removed 2026-09-17) — the console
+//                   still exposes markArrivedAtRestaurant() below as a
+//                   fallback mutation, but nothing currently calls it.
 //   assigned + driver_status "arrived_at_restaurant" -> driver verifies a
 //                   pickup code and taps "Picked up" in their own app,
 //                   writing `status: "picked_up"`. Per the handover doc this
@@ -544,9 +542,12 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
 }
 
 /**
- * Staff fallback: mark the driver as having reached the restaurant. Mirrors
- * exactly what the driver app itself would write — see
+ * Fallback mutation: mark the driver as having reached the restaurant.
+ * Mirrors exactly what the driver app itself would write — see
  * markArrivedAtRestaurant() in orders.firebase.ts. `status` is untouched.
+ *
+ * Not currently wired to any UI button (removed 2026-09-17) — kept in case
+ * a staff-facing trigger is reinstated later.
  */
 export async function markArrivedAtRestaurant(
   arg: { orderId: string } | { data: { orderId: string } },
