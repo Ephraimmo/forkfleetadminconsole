@@ -26,10 +26,18 @@ export type OrderStatus =
   | "accepted"
   | "preparing"
   | "ready"
+  /** Staff picked a driver, but the driver has not yet accepted the job in
+   *  their app. `driver_id` is set, but nothing is committed — staff may
+   *  freely reassign to a different driver while in this status. Only the
+   *  driver app may advance this to "assigned" (by accepting). */
+  | "offered"
+  /** Driver has accepted the job and is on the way to the restaurant.
+   *  Reassignment is no longer offered once here — the driver has committed. */
   | "assigned"
   /** Driver has physically reached the restaurant and is waiting for the order
-   *  handover. Gates "picked_up" — staff/driver may not skip straight from
-   *  "assigned" to "picked_up". */
+   *  handover. Only the driver app may write this status (no staff override) —
+   *  gates "picked_up", which staff/driver may not skip straight to from
+   *  "assigned"/"offered". */
   | "arrived"
   | "picked_up"
   | "on_the_way"
@@ -99,6 +107,8 @@ export interface FirebaseOrder {
   placed_at: string;
   accepted_at: string | null;
   ready_at: string | null;
+  /** Set by the driver app when the driver accepts the offered job (status → "assigned"). */
+  driver_accepted_at: string | null;
   arrived_at: string | null;
   picked_up_at: string | null;
   delivered_at: string | null;
@@ -313,7 +323,7 @@ export function orderType(o: { order_type?: OrderType | null }): OrderType {
   return o.order_type === "pickup" ? "pickup" : "delivery";
 }
 
-const DELIVERY_ONLY_STATUSES: OrderStatus[] = ["assigned", "arrived", "on_the_way"];
+const DELIVERY_ONLY_STATUSES: OrderStatus[] = ["offered", "assigned", "arrived", "on_the_way"];
 
 export async function setFirebaseOrderStatus(input: {
   orderId: string;
@@ -342,9 +352,14 @@ export async function setFirebaseOrderStatus(input: {
       patch.ready_at = ts;
       if (input.etaMinutes != null) patch.eta_minutes = input.etaMinutes;
       break;
+    case "offered":
+      // Set directly by assignFirebaseDriver when staff picks (or re-picks) a
+      // driver — not normally reached through this generic status setter.
+      break;
     case "assigned":
-      // Kitchen may move to "assigned" before a driver is chosen; dispatch will
-      // attach driver details when they claim the order.
+      // The driver app writes this directly to Firestore when the driver
+      // accepts an offered job — this console has no staff-facing action for it.
+      patch.driver_accepted_at = ts;
       break;
     case "arrived":
       patch.arrived_at = ts;
@@ -404,7 +419,11 @@ export async function assignFirebaseDriver(input: {
       "Customer pickup orders don't take drivers — the customer collects at the counter.",
     );
   }
-  if (!["accepted", "preparing", "ready", "assigned"].includes(order.status)) {
+  // "offered" is included so staff can re-pick a different driver while the
+  // current one hasn't accepted yet. "assigned" is deliberately excluded —
+  // once a driver has accepted, staff can no longer casually swap them out
+  // through this flow.
+  if (!["accepted", "preparing", "ready", "offered"].includes(order.status)) {
     throw new Error(`Cannot assign a driver while order is ${order.status}`);
   }
   const ts = now();
@@ -415,15 +434,16 @@ export async function assignFirebaseDriver(input: {
     driver_phone: input.driverPhone ?? null,
     driver_photo: input.driverPhoto ?? null,
     driver_rating: input.driverRating ?? null,
-    status: "assigned",
+    status: "offered",
+    driver_accepted_at: null,
     updated_at: ts,
     eta_minutes: eta,
     eta_at: new Date(Date.now() + eta * 60_000).toISOString(),
   };
   await fsSet(orderPath(input.orderId), w({ ...order, ...patch }));
   await appendTimeline(input.orderId, {
-    status: "assigned",
-    note: `Driver assigned: ${input.driverName ?? input.driverId}`,
+    status: "offered",
+    note: `Driver offered: ${input.driverName ?? input.driverId}`,
     actor: null,
   });
 }
@@ -561,6 +581,7 @@ export async function createFirebaseOrder(input: {
     placed_at: ts,
     accepted_at: null,
     ready_at: null,
+    driver_accepted_at: null,
     arrived_at: null,
     picked_up_at: null,
     delivered_at: null,

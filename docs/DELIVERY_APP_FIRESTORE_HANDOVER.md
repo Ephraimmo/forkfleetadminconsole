@@ -104,27 +104,40 @@ index prompt the console shows on first run).
 Status lifecycle (single source of truth, owned by the console + driver app):
 
 ```
-pending → accepted → preparing → ready → assigned → arrived → picked_up → on_the_way → delivered
+pending → accepted → preparing → ready → offered → assigned → arrived → picked_up → on_the_way → delivered
                                    ↘ rejected / cancelled / refunded (terminal)
 ```
 
-**BREAKING CHANGE (2026-09-17): new `arrived` status inserted between `assigned` and
-`picked_up`.** The console's ops UI now blocks staff from marking an order `picked_up`
-until it has gone through `arrived` — an order stuck at `assigned` with no way to reach
-`picked_up` almost always means the driver app hasn't shipped the write below yet.
+**BREAKING CHANGE (2026-09-17, updated 2026-09-17): two new statuses inserted between
+`ready` and `picked_up`: `offered` and `arrived`.** There is now **no staff-facing
+action in the console** for any of `ready→offered→assigned→arrived` except the very
+first step (staff picking a driver, which sets `offered`) — every other arrow in that
+chain can ONLY be written by the driver app, directly to Firestore. The console has no
+manual override / fallback button for any of them (a previous version of this doc had
+one for `arrived`; it has been removed). **This means: until the driver app implements
+every write below, no delivery order can progress past `offered` in the console —
+this is intentional, not a bug to work around on the console side.**
 
-- `ready` is the only status at which the console assigns a driver. Assignment sets
-  `driver_id` and status `assigned`.
-- **Driver app may only advance:** `assigned → arrived → picked_up → on_the_way →
-  delivered`, and only when `order.driver_id === myDriverId`. Never write terminal
-  statuses (`cancelled`, `refunded`, `rejected`) — those belong to the console.
-- **`arrived`**: write this the moment the driver taps "I've arrived at the
-  restaurant" in the driver app, **before** they may write `picked_up`. Patch:
-  `{ status: "arrived", arrived_at: ISO string, updated_at: ISO string }`. The
-  console will also accept a manual "Mark arrived at restaurant" override from staff
-  (dispatch board / orders page) for cases where the driver app can't reach this step
-  (offline, not yet installed, etc.) — don't rely on that as your primary path, it's a
-  fallback.
+- `ready` is the only status at which the console offers a driver (`driver_id` set,
+  status → `offered`). Staff may re-offer a different driver while status is still
+  `offered` (the driver hasn't accepted yet) — once `assigned`, staff can no longer
+  swap drivers through the normal assign flow.
+- **`offered → assigned`** (driver accepts): write the moment the driver taps
+  "Accept" in the driver app, only when `order.driver_id === myDriverId`. Patch:
+  `{ status: "assigned", driver_accepted_at: ISO string, updated_at: ISO string }`.
+  If the driver declines/ignores, do **not** write anything — staff will re-offer to a
+  different driver from the console; the order stays `offered` until then.
+- **`assigned → arrived`**: write the moment the driver taps "I've arrived at the
+  restaurant", only when `order.driver_id === myDriverId`. Patch:
+  `{ status: "arrived", arrived_at: ISO string, updated_at: ISO string }`.
+- **Driver app may only advance:** `offered → assigned → arrived → picked_up →
+  on_the_way → delivered`, and only when `order.driver_id === myDriverId`. Never write
+  terminal statuses (`cancelled`, `refunded`, `rejected`) — those belong to the
+  console. `offered → assigned` and `assigned → arrived` are **driver-app exclusive** —
+  the console has no button for either. `arrived → picked_up → on_the_way →
+  delivered` may be written by **either** the driver app or console staff (staff keep
+  their existing "Mark picked up" / "Mark on the way" / "Mark delivered" buttons,
+  unchanged from before this update).
 - Every status write must append a timeline entry:
   `timeline: [{ status, at: ISO string, note }]`.
 - `order_type: "delivery" | "pickup"`. Pickup orders never get a driver — ignore them.
@@ -161,56 +174,50 @@ Throttle to at most one write every 10–15 seconds while `status === "busy"` or
 
 ---
 
-## 5. Security rules (already deployed by the console)
+## 5. Security rules (updated in the repo 2026-09-17 — **NOT YET DEPLOYED**)
 
-Relevant excerpt from `firestore.rules`:
-
-```
-match /drivers/{driverId} {
-  allow read:  if signedIn();
-  allow write: if isPlatformAdmin() || isAnyRestaurantMember();
-}
-match /driverAssignments/{doc} {
-  allow read:  if signedIn();
-  allow write: if isPlatformAdmin() || isAnyRestaurantMember();
-}
-match /orders/{orderId} {
-  allow read, write: if isPlatformAdmin() || isAnyRestaurantMember();
-}
-```
-
-**Action required on the super-admin side** (do this before shipping the driver app):
-the current rules do not yet grant a signed-in driver write access to their own profile
-or to their assigned orders. Add:
+`firestore.rules` in this repo now grants a signed-in driver write access to their own
+profile and read/update access to orders assigned to them — this is required for
+everything in section 3.3 above to work (offer-accept, arrived, etc.). Relevant
+excerpt:
 
 ```
 function isDriverSelf(driverId) {
-  return request.auth != null && request.auth.uid == driverId;
+  return signedIn() && request.auth.uid == driverId;
 }
+function isOrderDriver() {
+  return signedIn() && resource.data.driver_id == request.auth.uid;
+}
+
+match /orders/{orderId} {
+  allow read, update: if isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver();
+  allow create, delete: if isPlatformAdmin() || isAnyRestaurantMember();
+  match /{document=**} {
+    allow read, write: if isPlatformAdmin() || isAnyRestaurantMember()
+      || (signedIn()
+          && get(/databases/$(database)/documents/orders/$(orderId)).data.driver_id == request.auth.uid);
+  }
+}
+
 match /drivers/{driverId} {
   allow read: if signedIn();
-  allow create, update: if isDriverSelf(driverId)
-                        || isPlatformAdmin() || isAnyRestaurantMember();
-}
-match /orders/{orderId} {
-  allow read: if isPlatformAdmin() || isAnyRestaurantMember()
-              || (request.auth != null
-                  && resource.data.driver_id == request.auth.uid);
-  allow update: if isPlatformAdmin() || isAnyRestaurantMember()
-                || (request.auth != null
-                    && resource.data.driver_id == request.auth.uid);
+  allow create, update: if isDriverSelf(driverId) || isPlatformAdmin() || isAnyRestaurantMember();
+  allow delete: if isPlatformAdmin() || isAnyRestaurantMember();
 }
 ```
 
-Deploy with:
+**This change is only committed to the repo — someone with Firebase CLI access to the
+`e-comm-bd997` project still needs to run:**
 
 ```bash
 firebase deploy --only firestore:rules
 ```
 
-If the driver app sees `permission-denied`, the cause is almost always: rules not
-deployed, the driver has no `drivers/{uid}` document, or `driver_id` on the order does
-not equal the signed-in uid.
+Until that deploy happens, every driver-app write described in section 3.3
+(`offered → assigned`, `assigned → arrived`, etc.) will fail with `permission-denied`,
+even once the driver app's code is correct. If the driver app sees
+`permission-denied` after that deploy, check: the driver has no `drivers/{uid}`
+document, or `driver_id` on the order does not equal the signed-in uid.
 
 ---
 
@@ -222,13 +229,18 @@ not equal the signed-in uid.
 3. Registration creates `drivers/{uid}` with `status: "pending"` and appears in the
    console's Driver Management list in real time.
 4. Driver can only go online after console approval (`is_verified && is_active`).
-5. Assigned orders appear live and advance only through
-   `arrived → picked_up → on_the_way → delivered`, each with a timeline entry. The
-   driver app must expose an explicit "I've arrived at the restaurant" action that
-   writes `status: "arrived"` — the console will not let the order reach `picked_up`
-   without it.
-6. Location updates show the driver moving on the console's Live Map.
-7. Cash collection writes into `orders/{id}.payment` and shows on the console's
+5. Offered orders (`status: "offered"`) appear live for the assigned driver, who must
+   be able to **Accept** (writes `status: "assigned"`, `driver_accepted_at`). If they
+   don't act, staff will re-offer to someone else from the console — no decline write
+   needed.
+6. Once `assigned`, the driver app must expose an explicit "I've arrived at the
+   restaurant" action that writes `status: "arrived"`, `arrived_at`. The console has
+   **no fallback** for either this or the accept step — until both are implemented, no
+   order will progress past `offered` in the console.
+7. From `arrived` onward, orders advance through `picked_up → on_the_way →
+   delivered`, each with a timeline entry.
+8. Location updates show the driver moving on the console's Live Map.
+9. Cash collection writes into `orders/{id}.payment` and shows on the console's
    Payments page.
 
 Console: https://console.firebase.google.com/project/e-comm-bd997/firestore

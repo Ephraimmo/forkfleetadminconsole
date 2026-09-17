@@ -107,6 +107,7 @@ const IN_FLIGHT = [
   "accepted",
   "preparing",
   "ready",
+  "offered",
   "assigned",
   "arrived",
   "picked_up",

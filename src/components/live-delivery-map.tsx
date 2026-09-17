@@ -46,6 +46,7 @@ interface Lane {
 function routeProgress(order: DispatchOrder, now: number): number {
   const base: Record<string, [number, number]> = {
     ready: [0, 0.02],
+    offered: [0.02, 0.02],
     assigned: [0.02, 0.2],
     arrived: [0.2, 0.2],
     picked_up: [0.2, 0.45],
@@ -134,7 +135,9 @@ export function LiveDeliveryMap({
   const tracked = useMemo(
     () =>
       orders
-        .filter((o) => ["ready", "assigned", "arrived", "picked_up", "on_the_way"].includes(o.status))
+        .filter((o) =>
+          ["ready", "offered", "assigned", "arrived", "picked_up", "on_the_way"].includes(o.status),
+        )
         .slice(0, 18),
     [orders],
   );

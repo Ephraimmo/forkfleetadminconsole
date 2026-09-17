@@ -111,6 +111,7 @@ function ReportsPage() {
           "accepted",
           "preparing",
           "ready",
+          "offered",
           "assigned",
           "arrived",
           "picked_up",

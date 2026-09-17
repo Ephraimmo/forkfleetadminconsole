@@ -62,6 +62,7 @@ const statusTone: Record<string, string> = {
   accepted: "bg-info/15 text-info",
   preparing: "bg-primary/15 text-primary",
   ready: "bg-primary/20 text-primary",
+  offered: "bg-info/10 text-info",
   assigned: "bg-info/15 text-info",
   arrived: "bg-info/18 text-info",
   picked_up: "bg-info/20 text-info",

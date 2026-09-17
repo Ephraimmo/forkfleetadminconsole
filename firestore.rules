@@ -48,6 +48,14 @@ service cloud.firestore {
         && restaurantUser().status == 'active';
     }
 
+    function isDriverSelf(driverId) {
+      return signedIn() && request.auth.uid == driverId;
+    }
+
+    function isOrderDriver() {
+      return signedIn() && resource.data.driver_id == request.auth.uid;
+    }
+
     // ------------------------------------------------------------- accounts
     match /staffUsers/{uid} {
       // Bootstrap: the very first staff account may create itself as super_admin.
@@ -105,16 +113,26 @@ service cloud.firestore {
 
     // ------------------------------------------------------------- orders
     match /orders/{orderId} {
-      allow read, write: if isPlatformAdmin() || isAnyRestaurantMember();
+      // A driver may only read/update an order already assigned to them
+      // (never create or delete) — needed for the driver app's direct
+      // "offered -> assigned -> arrived -> picked_up -> ..." status writes.
+      allow read, update: if isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver();
+      allow create, delete: if isPlatformAdmin() || isAnyRestaurantMember();
       match /{document=**} {
-        allow read, write: if isPlatformAdmin() || isAnyRestaurantMember();
+        allow read, write: if isPlatformAdmin() || isAnyRestaurantMember()
+          || (signedIn()
+              && get(/databases/$(database)/documents/orders/$(orderId)).data.driver_id == request.auth.uid);
       }
     }
 
     // ------------------------------------------------------------ drivers
     match /drivers/{driverId} {
       allow read: if signedIn();
-      allow write: if isPlatformAdmin() || isAnyRestaurantMember();
+      // A driver may create/update their own profile (registration, status,
+      // live location); approval fields are console-owned by convention but
+      // not separately rule-enforced here.
+      allow create, update: if isDriverSelf(driverId) || isPlatformAdmin() || isAnyRestaurantMember();
+      allow delete: if isPlatformAdmin() || isAnyRestaurantMember();
     }
 
     match /driverAssignments/{doc} {

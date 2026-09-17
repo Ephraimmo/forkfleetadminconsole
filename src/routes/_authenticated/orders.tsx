@@ -17,7 +17,9 @@ import {
   Navigation,
   ReceiptText,
   Search,
+  Send,
   ShoppingBag,
+  Store,
   Table as TableIcon,
   User as UserIcon,
   UtensilsCrossed,
@@ -112,6 +114,7 @@ const STATUSES: OrderStatus[] = [
   "accepted",
   "preparing",
   "ready",
+  "offered",
   "assigned",
   "arrived",
   "picked_up",
@@ -127,6 +130,7 @@ const statusTone: Record<string, string> = {
   accepted: "bg-violet-500/15 text-violet-300 border-violet-500/30",
   preparing: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   ready: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  offered: "bg-orange-500/15 text-orange-400 border-orange-500/25",
   assigned: "bg-sky-500/15 text-sky-400 border-sky-500/25",
   arrived: "bg-cyan-500/15 text-cyan-400 border-cyan-500/25",
   picked_up: "bg-sky-500/15 text-sky-400 border-sky-500/25",
@@ -137,18 +141,30 @@ const statusTone: Record<string, string> = {
   refunded: "bg-destructive/15 text-destructive border-destructive/25",
 };
 
+const statusLabel: Record<string, string> = {
+  offered: "Waiting for driver to accept",
+  assigned: "Waiting for driver to arrive",
+  arrived: "Driver at restaurant",
+};
+
 // Pipeline step rules:
 //  - pending     → only Accept / Reject (no driver assignment, no kitchen advance)
 //  - accepted    → kitchen picks up
 //  - preparing   → kitchen marks ready
-//  - ready       → dispatch ASSIGNS DRIVER (only assignable status)
-//  - assigned    → driver arrives at the restaurant
-//  - arrived     → driver picks up the order (gates picked_up — cannot be skipped)
+//  - ready       → dispatch OFFERS a driver (only assignable status; may also
+//                  re-offer a different driver while "offered")
+//  - offered     → driver app: driver accepts. No staff action — read-only status.
+//  - assigned    → driver app: driver arrives at the restaurant. No staff
+//                  action — read-only status.
+//  - arrived     → driver app writes this; staff then mark it picked up.
 //  - picked_up   → driver starts delivery
 //  - on_the_way  → driver delivers
 //  - delivered/rejected/cancelled/refunded: terminal
+//
+// "offered" and "assigned" have deliberately no entry below — there is no
+// staff-facing action for either transition, only the driver app can advance
+// them (see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md).
 const NEXT_STEP: Partial<Record<OrderStatus, OrderStatus>> = {
-  assigned: "arrived",
   arrived: "picked_up",
   picked_up: "on_the_way",
   on_the_way: "delivered",
@@ -171,7 +187,6 @@ function nextStepLabel(order: DispatchOrder, next: OrderStatus): string {
     if (next === "picked_up") return "Mark collected";
     if (next === "delivered") return "Complete";
   }
-  if (next === "arrived") return "Mark arrived at restaurant";
   return next.replace("_", " ");
 }
 
@@ -254,7 +269,7 @@ function OrdersPage() {
   const assignMutation = useMutation({
     mutationFn: (vars: { orderId: string; driverId: string }) => assign(vars),
     onSuccess: () => {
-      toast.success("Driver assigned");
+      toast.success("Driver offered — waiting for them to accept");
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -377,15 +392,19 @@ function OrdersPage() {
               <FlowStep tone={statusTone["accepted"]}>Accepted</FlowStep> →
               <FlowStep tone={statusTone["preparing"]}>Cooking</FlowStep> →
               <FlowStep tone={statusTone["ready"]}>Ready</FlowStep> →
-              <span className="font-medium">assign driver</span> →
-              <FlowStep tone={statusTone["assigned"]}>Assigned</FlowStep> →
+              <span className="font-medium">offer driver</span> →
+              <FlowStep tone={statusTone["offered"]}>Waiting to accept</FlowStep> →
+              <FlowStep tone={statusTone["assigned"]}>Waiting to arrive</FlowStep> →
               <FlowStep tone={statusTone["arrived"]}>Arrived</FlowStep> →
               <FlowStep tone={statusTone["on_the_way"]}>On the way</FlowStep> →
               <FlowStep tone={statusTone["delivered"]}>Delivered</FlowStep>
               <span className="mx-1">•</span>
               <FlowStep tone={statusTone["rejected"]}>Rejected</FlowStep>
               <span className="ml-auto">
-                Drivers can only be assigned when the order is <b>Ready</b>.
+                Drivers can only be offered when the order is <b>Ready</b>. "Waiting to accept",
+                "Waiting to arrive" and "Arrived" are driven only by the driver app — staff can
+                reassign the driver while <b>Waiting to accept</b>, but cannot force any of these
+                three steps.
               </span>
             </div>
 
@@ -709,11 +728,13 @@ function OrdersTable({
                 <TableCell className="text-muted-foreground">{order.customer_name}</TableCell>
                 <TableCell>
                   <Badge variant="outline" className={statusTone[order.status] ?? ""}>
-                    {order.status.replace("_", " ")}
+                    {statusLabel[order.status] ?? order.status.replace("_", " ")}
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  {canManage && order.status === "ready" && order.order_type !== "pickup" ? (
+                  {canManage &&
+                  (order.status === "ready" || order.status === "offered") &&
+                  order.order_type !== "pickup" ? (
                     eligibleDriversFor(order, drivers, activeAssignments, branchRegistry).length ===
                     0 ? (
                       <span className="block max-w-[220px] text-[11px] text-amber-400">
@@ -876,7 +897,9 @@ function OrdersCards({
     { key: "accepted", label: "Queued for kitchen", orders: [], tone: "text-violet-300" },
     { key: "preparing", label: "Preparing", orders: [], tone: "text-amber-300" },
     { key: "ready", label: "Ready for pickup", orders: [], tone: "text-amber-400" },
-    { key: "assigned", label: "Driver assigned", orders: [], tone: "text-sky-400" },
+    { key: "offered", label: "Waiting for driver to accept", orders: [], tone: "text-orange-400" },
+    { key: "assigned", label: "Waiting for driver to arrive", orders: [], tone: "text-sky-400" },
+    { key: "arrived", label: "Driver at restaurant", orders: [], tone: "text-cyan-400" },
     { key: "on_the_way", label: "On the way", orders: [], tone: "text-indigo-400" },
     { key: "delivered", label: "Delivered", orders: [], tone: "text-emerald-400" },
     {
@@ -892,11 +915,12 @@ function OrdersCards({
     else if (o.status === "accepted") groups[1]!.orders.push(o);
     else if (o.status === "preparing") groups[2]!.orders.push(o);
     else if (o.status === "ready") groups[3]!.orders.push(o);
-    else if (o.status === "assigned" || o.status === "arrived" || o.status === "picked_up")
-      groups[4]!.orders.push(o);
-    else if (o.status === "on_the_way") groups[5]!.orders.push(o);
-    else if (o.status === "delivered") groups[6]!.orders.push(o);
-    else groups[7]!.orders.push(o);
+    else if (o.status === "offered") groups[4]!.orders.push(o);
+    else if (o.status === "assigned") groups[5]!.orders.push(o);
+    else if (o.status === "arrived" || o.status === "picked_up") groups[6]!.orders.push(o);
+    else if (o.status === "on_the_way") groups[7]!.orders.push(o);
+    else if (o.status === "delivered") groups[8]!.orders.push(o);
+    else groups[9]!.orders.push(o);
   }
 
   return (
@@ -911,7 +935,9 @@ function OrdersCards({
                 {g.key === "accepted" && <Clock3 className="size-4" />}
                 {g.key === "preparing" && <UtensilsCrossed className="size-4" />}
                 {g.key === "ready" && <MapPin className="size-4" />}
+                {g.key === "offered" && <Send className="size-4" />}
                 {g.key === "assigned" && <Bike className="size-4" />}
+                {g.key === "arrived" && <Store className="size-4" />}
                 {g.key === "on_the_way" && <Navigation className="size-4" />}
                 {g.key === "delivered" && <ReceiptText className="size-4" />}
                 {g.key === "terminal" && <Ban className="size-4" />}
@@ -1007,7 +1033,7 @@ function OrderCard({
         <div className="flex flex-col items-end gap-1">
           <OrderTypeBadge type={order.order_type} />
           <Badge variant="outline" className={statusTone[order.status] ?? ""}>
-            {order.status.replace("_", " ")}
+            {statusLabel[order.status] ?? order.status.replace("_", " ")}
           </Badge>
           <Badge variant={waited > 25 ? "destructive" : "secondary"} className="text-[10px]">
             {waited}m
@@ -1122,7 +1148,9 @@ function OrderCard({
             </Button>
           </>
         )}
-        {canManage && order.status === "ready" && order.order_type !== "pickup" &&
+        {canManage &&
+          (order.status === "ready" || order.status === "offered") &&
+          order.order_type !== "pickup" &&
           (() => {
             const eligible = eligibleDriversFor(order, drivers, activeAssignments, branchRegistry);
             if (eligible.length === 0) {

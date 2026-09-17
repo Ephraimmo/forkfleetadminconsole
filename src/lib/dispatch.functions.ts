@@ -9,12 +9,20 @@
 //   pending      -> accept (Orders page) or reject (Orders page, with reason)
 //   accepted     -> kitchen starts cooking   (Orders page "Send to kitchen" or auto)
 //   preparing    -> kitchen marks ready
-//   ready        -> dispatcher ASSIGNS DRIVER  ← only assignable status
-//   assigned     -> driver arrives at the restaurant
-//   arrived      -> driver picks up the order
+//   ready        -> dispatcher OFFERS a driver  ← only assignable status
+//   offered      -> driver app: driver accepts (staff may re-offer a different
+//                   driver while here — this is the only reassignable status
+//                   besides "ready")
+//   assigned     -> driver app: driver arrives at the restaurant
+//   arrived      -> driver app writes this; no staff action moves an order
+//                   into it. Once here, staff mark it picked up.
 //   picked_up    -> driver marks on the way
 //   on_the_way   -> driver marks delivered
 //   delivered / rejected / cancelled / refunded are terminal.
+//
+// "offered" -> "assigned" -> "arrived" are written ONLY by the driver app
+// (direct Firestore writes, see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md) —
+// deliberately no staff-facing action exists for any of them in this console.
 
 import {
   assignFirebaseDriver,
@@ -52,6 +60,7 @@ export interface DispatchOrder {
   /** "delivery" needs a driver; "pickup" is collected by the customer. */
   order_type: OrderType;
   placed_at: string;
+  driver_accepted_at: string | null;
   arrived_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
@@ -123,9 +132,16 @@ export interface AuditRow {
 }
 
 // Orders that show on the Dispatch board (ready-for-pickup + in-flight)
-const DISPATCH_STATUSES: OrderStatus[] = ["ready", "assigned", "arrived", "picked_up", "on_the_way"];
+const DISPATCH_STATUSES: OrderStatus[] = [
+  "ready",
+  "offered",
+  "assigned",
+  "arrived",
+  "picked_up",
+  "on_the_way",
+];
 // Active (driver already attached)
-const ACTIVE_STATUSES: OrderStatus[] = ["assigned", "arrived", "picked_up", "on_the_way"];
+const ACTIVE_STATUSES: OrderStatus[] = ["offered", "assigned", "arrived", "picked_up", "on_the_way"];
 // Terminal statuses that should never be acted on
 const TERMINAL_STATUSES: OrderStatus[] = ["delivered", "rejected", "cancelled", "refunded"];
 
@@ -137,6 +153,7 @@ function toDispatchOrder(p: OrderPayload): DispatchOrder {
     status: o.status,
     order_type: orderType(o),
     placed_at: o.placed_at,
+    driver_accepted_at: o.driver_accepted_at,
     arrived_at: o.arrived_at,
     delivered_at: o.delivered_at,
     cancelled_at: o.cancelled_at,
@@ -344,10 +361,13 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
   const input = unwrap(arg)!;
   const order = getCached().find((o) => o.id === input.orderId);
   if (!order) throw new Error("Order not found");
-  // Only READY orders can be dispatched.
-  if (order.status !== "ready") {
+  // Ready orders can be offered a driver for the first time; "offered" orders
+  // can be re-offered to a different driver while the current one hasn't
+  // accepted yet. Once "assigned" (accepted), staff can no longer swap drivers
+  // through this flow.
+  if (order.status !== "ready" && order.status !== "offered") {
     throw new Error(
-      `You can only assign a driver when the order is ready for delivery (currently ${order.status.replace("_", " ")}).`,
+      `You can only assign a driver when the order is ready for delivery or waiting for a driver to accept (currently ${order.status.replace("_", " ")}).`,
     );
   }
 
@@ -397,10 +417,10 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
   }
 
   logAudit({
-    action: "order.driver.assigned",
+    action: "order.driver.offered",
     entityType: "order",
     entityId: input.orderId,
-    after: { status: "assigned", driver_id: input.driverId },
+    after: { status: "offered", driver_id: input.driverId },
     actorEmail: currentActor(),
   });
   return { ok: true };
@@ -408,13 +428,9 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
 
 type AdvanceInput = { orderId: string; nextStatus: OrderStatus; etaMinutes?: number };
 
-const DISPATCH_TRANSITIONS: OrderStatus[] = [
-  "arrived",
-  "picked_up",
-  "on_the_way",
-  "delivered",
-  "cancelled",
-];
+// "arrived" is deliberately excluded — only the driver app may write it
+// (direct Firestore write), never a staff action through this console.
+const DISPATCH_TRANSITIONS: OrderStatus[] = ["picked_up", "on_the_way", "delivered", "cancelled"];
 
 export async function advanceDelivery(arg: AdvanceInput | { data: AdvanceInput }) {
   const input = unwrap(arg)!;

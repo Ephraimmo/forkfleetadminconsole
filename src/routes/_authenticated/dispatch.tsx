@@ -12,6 +12,7 @@ import {
   MessageSquare,
   PackageCheck,
   Radar,
+  Send,
   ShoppingBag,
   Store,
   Truck,
@@ -82,16 +83,18 @@ export const Route = createFileRoute("/_authenticated/dispatch")({
   component: DispatchPage,
 });
 
+// "offered" and "assigned" deliberately have next: null — only the driver app
+// may write "assigned" (accept) and "arrived", never a staff action here.
 const LANES: { key: OrderStatus; label: string; next: OrderStatus | null; icon: typeof Radar }[] = [
   { key: "ready", label: "Awaiting driver", next: null, icon: PackageCheck },
-  { key: "assigned", label: "Driver assigned", next: "arrived", icon: Bike },
+  { key: "offered", label: "Waiting for driver to accept", next: null, icon: Send },
+  { key: "assigned", label: "Waiting for driver to arrive", next: null, icon: Bike },
   { key: "arrived", label: "Driver at restaurant", next: "picked_up", icon: Store },
   { key: "picked_up", label: "Picked up", next: "on_the_way", icon: Truck },
   { key: "on_the_way", label: "On the way", next: "delivered", icon: MapPin },
 ];
 
 const nextLabel: Record<string, string> = {
-  arrived: "Mark arrived at restaurant",
   picked_up: "Mark picked up",
   on_the_way: "Mark on the way",
   delivered: "Mark delivered",
@@ -145,7 +148,7 @@ function DispatchPage() {
     mutationFn: (vars: { orderId: string; driverId: string; etaMinutes?: number }) =>
       assign({ data: vars }),
     onSuccess: () => {
-      toast.success("Driver assigned");
+      toast.success("Driver offered — waiting for them to accept");
       setAssigning(null);
       setDriverId("");
       invalidate();
@@ -282,7 +285,7 @@ function DispatchPage() {
               </CardContent>
             </Card>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {LANES.map((lane) => {
                 const laneOrders = deliveryOrders.filter((o) => o.status === lane.key);
                 return (
@@ -300,13 +303,14 @@ function DispatchPage() {
                           order={order}
                           canManage={canManage}
                           onViewNotes={() => setNotesOrder(order)}
-                          {...(lane.key === "ready"
+                          {...(lane.key === "ready" || lane.key === "offered"
                             ? {
                                 onAssign: () => {
                                   setAssigning(order);
                                   setDriverId("");
                                   setEta(String(order.eta_minutes ?? 30));
                                 },
+                                assignLabel: lane.key === "offered" ? "Change driver" : "Assign driver",
                               }
                             : {})}
                           {...(lane.next
@@ -588,6 +592,7 @@ function DeliveryCard({
   order,
   canManage,
   onAssign,
+  assignLabel,
   onAdvance,
   advanceLabel,
   onCancel,
@@ -596,6 +601,7 @@ function DeliveryCard({
   order: DispatchOrder;
   canManage: boolean;
   onAssign?: () => void;
+  assignLabel?: string;
   onAdvance?: () => void;
   advanceLabel?: string;
   onCancel?: () => void;
@@ -652,7 +658,7 @@ function DeliveryCard({
         <div className="mt-3 flex flex-col gap-2">
           {onAssign && (
             <Button size="sm" onClick={onAssign}>
-              <Bike className="mr-1 size-3.5" /> Assign driver
+              <Bike className="mr-1 size-3.5" /> {assignLabel ?? "Assign driver"}
             </Button>
           )}
           {onAdvance && (
