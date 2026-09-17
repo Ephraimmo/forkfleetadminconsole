@@ -12,17 +12,21 @@
 //   ready        -> dispatcher OFFERS a driver  ← only assignable status
 //   offered      -> driver app: driver accepts (staff may re-offer a different
 //                   driver while here — this is the only reassignable status
-//                   besides "ready")
-//   assigned     -> driver app: driver arrives at the restaurant
-//   arrived      -> driver app writes this; no staff action moves an order
-//                   into it. Once here, staff mark it picked up.
+//                   besides "ready"). No staff override to force acceptance.
+//   assigned     -> driver app writes "arrived" when the driver reaches the
+//                   restaurant. Staff ALSO have a manual "Mark arrived at
+//                   restaurant" fallback for this one step (re-added
+//                   2026-09-17 — orders were getting permanently stuck here
+//                   while the driver app's arrived write wasn't shipped yet).
+//   arrived      -> staff mark it picked up.
 //   picked_up    -> driver marks on the way
 //   on_the_way   -> driver marks delivered
 //   delivered / rejected / cancelled / refunded are terminal.
 //
-// "offered" -> "assigned" -> "arrived" are written ONLY by the driver app
-// (direct Firestore writes, see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md) —
-// deliberately no staff-facing action exists for any of them in this console.
+// "offered" -> "assigned" (driver accepting) is still driver-app ONLY — no
+// staff override exists for that step, only reassignment to a different
+// driver. "assigned" -> "arrived" may be written by either the driver app or
+// staff (see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md).
 
 import {
   assignFirebaseDriver,
@@ -428,9 +432,16 @@ export async function assignDriver(arg: AssignInput | { data: AssignInput }) {
 
 type AdvanceInput = { orderId: string; nextStatus: OrderStatus; etaMinutes?: number };
 
-// "arrived" is deliberately excluded — only the driver app may write it
-// (direct Firestore write), never a staff action through this console.
-const DISPATCH_TRANSITIONS: OrderStatus[] = ["picked_up", "on_the_way", "delivered", "cancelled"];
+// "offered" and "assigned" are deliberately excluded — staff can never force
+// a driver's acceptance. "arrived" IS included: a manual staff fallback for
+// when the driver app hasn't (yet) written it.
+const DISPATCH_TRANSITIONS: OrderStatus[] = [
+  "arrived",
+  "picked_up",
+  "on_the_way",
+  "delivered",
+  "cancelled",
+];
 
 export async function advanceDelivery(arg: AdvanceInput | { data: AdvanceInput }) {
   const input = unwrap(arg)!;

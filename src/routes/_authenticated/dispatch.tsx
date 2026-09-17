@@ -83,18 +83,20 @@ export const Route = createFileRoute("/_authenticated/dispatch")({
   component: DispatchPage,
 });
 
-// "offered" and "assigned" deliberately have next: null — only the driver app
-// may write "assigned" (accept) and "arrived", never a staff action here.
+// "offered" deliberately has next: null — only the driver app may write
+// "assigned" (accept), never a staff action here. "assigned" -> "arrived" DOES
+// have a staff fallback (Mark arrived at restaurant) alongside the driver app.
 const LANES: { key: OrderStatus; label: string; next: OrderStatus | null; icon: typeof Radar }[] = [
   { key: "ready", label: "Awaiting driver", next: null, icon: PackageCheck },
   { key: "offered", label: "Waiting for driver to accept", next: null, icon: Send },
-  { key: "assigned", label: "Waiting for driver to arrive", next: null, icon: Bike },
+  { key: "assigned", label: "Waiting for driver to arrive", next: "arrived", icon: Bike },
   { key: "arrived", label: "Driver at restaurant", next: "picked_up", icon: Store },
   { key: "picked_up", label: "Picked up", next: "on_the_way", icon: Truck },
   { key: "on_the_way", label: "On the way", next: "delivered", icon: MapPin },
 ];
 
 const nextLabel: Record<string, string> = {
+  arrived: "Mark arrived at restaurant",
   picked_up: "Mark picked up",
   on_the_way: "Mark on the way",
   delivered: "Mark delivered",

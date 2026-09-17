@@ -109,14 +109,17 @@ pending → accepted → preparing → ready → offered → assigned → arrive
 ```
 
 **BREAKING CHANGE (2026-09-17, updated 2026-09-17): two new statuses inserted between
-`ready` and `picked_up`: `offered` and `arrived`.** There is now **no staff-facing
-action in the console** for any of `ready→offered→assigned→arrived` except the very
-first step (staff picking a driver, which sets `offered`) — every other arrow in that
-chain can ONLY be written by the driver app, directly to Firestore. The console has no
-manual override / fallback button for any of them (a previous version of this doc had
-one for `arrived`; it has been removed). **This means: until the driver app implements
-every write below, no delivery order can progress past `offered` in the console —
-this is intentional, not a bug to work around on the console side.**
+`ready` and `picked_up`: `offered` and `arrived`.**
+
+- **`offered → assigned` (driver accepting) has NO staff override, ever.** Staff's
+  only lever is re-offering the order to a different driver while it's still
+  `offered`. Until the driver app writes this, an order stays `offered` (staff can
+  keep cycling through drivers, but nothing completes without this write).
+- **`assigned → arrived` DOES have a staff fallback** ("Mark arrived at restaurant" in
+  the console) — added back 2026-09-17 after real orders got permanently stuck with no
+  way to move them while this write wasn't shipped yet. Prefer writing this from the
+  driver app once you can; the staff fallback exists so operations doesn't grind to a
+  halt in the meantime, not as a signal that this write is optional.
 
 - `ready` is the only status at which the console offers a driver (`driver_id` set,
   status → `offered`). Staff may re-offer a different driver while status is still
@@ -133,11 +136,11 @@ this is intentional, not a bug to work around on the console side.**
 - **Driver app may only advance:** `offered → assigned → arrived → picked_up →
   on_the_way → delivered`, and only when `order.driver_id === myDriverId`. Never write
   terminal statuses (`cancelled`, `refunded`, `rejected`) — those belong to the
-  console. `offered → assigned` and `assigned → arrived` are **driver-app exclusive** —
-  the console has no button for either. `arrived → picked_up → on_the_way →
-  delivered` may be written by **either** the driver app or console staff (staff keep
-  their existing "Mark picked up" / "Mark on the way" / "Mark delivered" buttons,
-  unchanged from before this update).
+  console. `offered → assigned` is **driver-app exclusive** — the console has no
+  button for it. `assigned → arrived → picked_up → on_the_way → delivered` may be
+  written by **either** the driver app or console staff (staff keep their existing
+  "Mark arrived at restaurant" / "Mark picked up" / "Mark on the way" / "Mark
+  delivered" buttons).
 - Every status write must append a timeline entry:
   `timeline: [{ status, at: ISO string, note }]`.
 - `order_type: "delivery" | "pickup"`. Pickup orders never get a driver — ignore them.
@@ -234,9 +237,11 @@ document, or `driver_id` on the order does not equal the signed-in uid.
    don't act, staff will re-offer to someone else from the console — no decline write
    needed.
 6. Once `assigned`, the driver app must expose an explicit "I've arrived at the
-   restaurant" action that writes `status: "arrived"`, `arrived_at`. The console has
-   **no fallback** for either this or the accept step — until both are implemented, no
-   order will progress past `offered` in the console.
+   restaurant" action that writes `status: "arrived"`, `arrived_at`. The console has a
+   staff fallback for this specific step ("Mark arrived at restaurant") so operations
+   aren't blocked while this ships, but write it from the app as the primary path —
+   the accept step (`offered → assigned`) has **no fallback at all**, so no order can
+   complete without it regardless.
 7. From `arrived` onward, orders advance through `picked_up → on_the_way →
    delivered`, each with a timeline entry.
 8. Location updates show the driver moving on the console's Live Map.

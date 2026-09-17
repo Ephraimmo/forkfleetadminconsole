@@ -153,18 +153,22 @@ const statusLabel: Record<string, string> = {
 //  - preparing   → kitchen marks ready
 //  - ready       → dispatch OFFERS a driver (only assignable status; may also
 //                  re-offer a different driver while "offered")
-//  - offered     → driver app: driver accepts. No staff action — read-only status.
-//  - assigned    → driver app: driver arrives at the restaurant. No staff
-//                  action — read-only status.
-//  - arrived     → driver app writes this; staff then mark it picked up.
+//  - offered     → driver app: driver accepts. No staff override exists —
+//                  staff's only lever here is re-offering a different driver.
+//  - assigned    → normally the driver app writes "arrived" here, but staff
+//                  also have a manual "Mark arrived at restaurant" fallback
+//                  (re-added 2026-09-17 — orders were getting permanently
+//                  stuck while the driver app's arrived write wasn't shipped).
+//  - arrived     → driver picks up the order.
 //  - picked_up   → driver starts delivery
 //  - on_the_way  → driver delivers
 //  - delivered/rejected/cancelled/refunded: terminal
 //
-// "offered" and "assigned" have deliberately no entry below — there is no
-// staff-facing action for either transition, only the driver app can advance
-// them (see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md).
+// "offered" has deliberately no entry below — there is no staff-facing action
+// to force driver acceptance, only the driver app can write that transition
+// (see docs/DELIVERY_APP_FIRESTORE_HANDOVER.md).
 const NEXT_STEP: Partial<Record<OrderStatus, OrderStatus>> = {
+  assigned: "arrived",
   arrived: "picked_up",
   picked_up: "on_the_way",
   on_the_way: "delivered",
@@ -187,6 +191,7 @@ function nextStepLabel(order: DispatchOrder, next: OrderStatus): string {
     if (next === "picked_up") return "Mark collected";
     if (next === "delivered") return "Complete";
   }
+  if (next === "arrived") return "Mark arrived at restaurant";
   return next.replace("_", " ");
 }
 
@@ -401,10 +406,10 @@ function OrdersPage() {
               <span className="mx-1">•</span>
               <FlowStep tone={statusTone["rejected"]}>Rejected</FlowStep>
               <span className="ml-auto">
-                Drivers can only be offered when the order is <b>Ready</b>. "Waiting to accept",
-                "Waiting to arrive" and "Arrived" are driven only by the driver app — staff can
-                reassign the driver while <b>Waiting to accept</b>, but cannot force any of these
-                three steps.
+                Drivers can only be offered when the order is <b>Ready</b>. Staff can reassign the
+                driver while <b>Waiting to accept</b>, and can manually mark <b>Arrived</b> as a
+                fallback while <b>Waiting to arrive</b> — driver acceptance itself can only come
+                from the driver app.
               </span>
             </div>
 
