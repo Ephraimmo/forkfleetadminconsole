@@ -6,9 +6,11 @@
 > driver assignment and delivery progress actually work in the ForkFleet Super Admin console today —
 > so a restaurant admin sees the **same, accurate** order status a platform dispatcher sees, not a
 > stale or misleading one.
-> **Source of truth:** ForkFleet Super Admin console (`forkfleetadminconsole`), routes `/orders` and
-> `/dispatch` — this doc is a snapshot of that implementation, originally 2026-09-17, updated
-> **2026-09-20** to add the `rm.orders.assign` permission (§4, §5.3, §6).
+> **Source of truth:** ForkFleet Super Admin console (`forkfleetadminconsole`), routes `/orders`,
+> `/dispatch` and `/payments` — this doc is a snapshot of that implementation: originally 2026-09-17,
+> updated 2026-09-20 to add the `rm.orders.assign` permission (§4, §5.3, §6), updated again
+> **2026-09-20** to add the proof-of-payment approval gate (§5.6) and restaurant payment-method
+> configuration (§11).
 
 Related docs in this repo:
 
@@ -188,6 +190,13 @@ Rules of the schema:
   `status: "arrived"` — values an earlier, incorrect build of this console briefly wrote before this
   contract was finalized. Treat `"offered"` as equivalent to `"ready"` and `"arrived"` as equivalent
   to `"assigned"` wherever you compare `status` directly. §3's algorithm already does this for you.
+- **⚠️ Landmine: `order.payment_method` and payment *evidence* method are two different, overlapping
+  enums.** `FirebaseOrder.payment_method` above is `"card" | "cash" | "wallet" | "eft" | "apple_pay" |
+  "google_pay"`. The separate payment-evidence record at `orders/{id}/payment` (§5.6) uses its own
+  `PaymentMethodId`: `"card" | "cash_on_delivery" | "cash_on_pickup" | "eft"` — narrower, and
+  `"cash"`/`"wallet"` on the order don't map cleanly onto it. They only agree on the literals `"card"`
+  and `"eft"`. The proof-of-payment gate in §5.6 checks `order.payment_method === "eft"` specifically
+  because that literal is safe across both enums — don't assume any other value lines up.
 
 ---
 
@@ -300,6 +309,12 @@ await rejectFirebaseOrder({ orderId, reason, actor: session.email });
 // sets status: "rejected", rejected_at, rejection_reason, clears driver_* fields
 ```
 
+**⚠️ Accept has a precondition as of 2026-09-20: `order.payment_method === "eft"` orders cannot be
+accepted until their proof of payment is approved.** See §5.6 before implementing Accept — calling
+`setFirebaseOrderStatus` directly for an unreviewed EFT order (as the snippet above does) bypasses
+that check entirely; this console's own `acceptOrder()` throws first if the check fails, and your
+Accept implementation must do the same.
+
 ### 5.2 Kitchen advance (`accepted → preparing → ready`)
 
 Identical to the existing Kitchen handover doc — no changes here:
@@ -363,6 +378,84 @@ Nothing in this platform currently defines what cancelling mid-delivery *does* b
 button up for real use, confirm with product what should happen; see `ORDER_WORKFLOW_HANDOVER.md` §5
 open decision #1, which applies here unchanged.
 
+### 5.6 Proof of payment approval — EFT orders only (added 2026-09-20)
+
+A restaurant may enable "Bank transfer (EFT)" as a payment method (§11) — the customer transfers the
+money themselves and uploads proof (image or PDF) at checkout. That upload is **not** self-verifying:
+someone has to actually look at it and confirm the amount/reference are right before the order is
+real money in the bank. This console's Payments page has a dedicated **"Proof of payment"** tab for
+exactly that review, and — critically — **`acceptOrder()` now refuses to accept an EFT order until
+that review has happened.** Your Restaurant Admin app's Accept action must enforce the same rule (see
+§5.1); it must also give restaurant staff *somewhere* to do the review itself, or their own EFT orders
+will get permanently stuck at `pending` with no visible way to unblock them.
+
+**The data**, from `src/lib/payments.firebase.ts` — a separate record per order at
+`orders/{orderId}/payment` (this is payment *evidence*, unrelated to the two `timeline`s in §7):
+
+```ts
+export type PaymentStatus = "pending" | "paid" | "failed" | "refunded";
+
+export interface OrderPaymentEvidence {
+  order_id: string;
+  method: string;           // see the §2 landmine — usually "eft" here
+  status: PaymentStatus;    // "pending" = not yet reviewed; gates Accept while payment_method is "eft"
+  amount: number;
+  currency: string;         // "ZAR"
+  receipt_number: string;
+  proof_url: string | null; // the uploaded image/PDF — null until the customer uploads
+  rejection_reason: string | null; // set when staff reject (status -> "failed")
+  reviewed_by: string | null;      // who approved or rejected, and reviewed_at when
+  reviewed_at: string | null;
+  paid_at: string | null;
+  recorded_by: string | null;
+  // + gateway/reference/card_brand/card_last4 fields, not relevant to EFT
+  updated_at: string;
+}
+```
+
+**The gate** — port this exactly, it's the whole point of this section:
+
+```ts
+// Inside your Accept handler, before writing status: "accepted":
+if (order.payment_method === "eft") {
+  const evidence = await getOrderPaymentEvidence(order.id); // orders/{id}/payment, one-shot read
+  if (!evidence || evidence.status !== "paid") {
+    throw new Error(
+      "This order was paid by bank transfer — approve the uploaded proof of payment before accepting.",
+    );
+  }
+}
+```
+
+**The review actions** — a restaurant-scoped equivalent of this console's "Proof of payment" tab
+needs, at minimum, a list of the restaurant's own EFT orders with `evidence.status === "pending"`,
+each with:
+
+- A link to `evidence.proof_url` (disable Approve until this is set — nothing to approve yet).
+- **Approve** → `markOrderPaid({ order_id, order_number, total, payment_method: "eft", recorded_by:
+  session.email })`. Sets `status: "paid"`, `paid_at`, `reviewed_by`/`reviewed_at`. This is the exact
+  same function the receipt dialog's existing "Mark as paid" button already calls for cash orders —
+  reuse it, don't fork it.
+- **Reject** → `rejectOrderPayment({ order_id, reason, actor: session.email })` — reason is mandatory
+  (mirrors §5.1's reject). Sets `status: "failed"`, `rejection_reason`, `reviewed_by`/`reviewed_at`.
+  **Does not touch the order's own `status`** — rejecting the payment leaves the order sitting at
+  `pending`; staff separately decide whether to also reject the order itself via §5.1.
+
+There is currently **no dedicated `rm.*` permission for this review action** in
+`restaurant-permissions.ts` — this console gates it with the platform permission `finance.manage`
+("Initiate payouts, approve refunds, reconcile batches"), which has no Restaurant Admin equivalent.
+Until product defines one, the closest existing fit is `rm.payments.manage` ("Configure payment
+methods and reconcile" — §11); use that rather than reusing `rm.orders.manage` or `rm.orders.assign`,
+which are about the order lifecycle and driver assignment, not payment verification. Flag this gap to
+product if a dedicated `rm.orders.approve_payment`-style code turns out to be needed later — don't
+silently decide it yourself.
+
+Query all of a restaurant's orders awaiting review the way this console's
+`listOrdersAwaitingPaymentApproval()` does: fetch the restaurant's orders, filter to
+`payment_method === "eft"`, one-shot-read `orders/{id}/payment` for each, keep `status === "pending"`.
+There's no live subscription for this queue yet in this console either — it polls on an interval; a
+`onSnapshot`-based version would be a genuine improvement if you build one.
+
 ---
 
 ## 6. Permissions
@@ -378,10 +471,15 @@ Already reserved in `src/lib/restaurant-permissions.ts` — use these, don't inv
 | Advance kitchen prep | `rm.kitchen.manage` |
 | View dispatch/delivery board (if you build that too) | `rm.delivery.view` |
 | Full dispatch management — bulk reassignment, ETA, live map (if you build that too) | `rm.delivery.manage` |
+| View a restaurant's enabled payment methods (§11) | `rm.payments.view` |
+| Configure payment methods; **best current fit for reviewing/approving proof of payment (§5.6)** — no dedicated code exists yet | `rm.payments.manage` |
 
 `rm.orders.assign` is deliberately **separate from `rm.orders.manage`** — a restaurant may want staff
 who can accept/reject/advance orders without letting them pick drivers, or the reverse. Check both
-independently; don't assume one implies the other.
+independently; don't assume one implies the other. `rm.payments.manage` covers *both* "configure which
+methods this restaurant accepts" (§11) and, until product says otherwise, "approve/reject proof of
+payment" (§5.6) — these are conceptually distinct enough that a future dedicated code for the latter
+wouldn't be surprising; don't hard-code the assumption that they'll always share one permission.
 
 Role defaults already granted in `restaurant-permissions.ts`: `restaurant_owner` gets everything;
 `restaurant_manager` and `branch_manager` get `rm.orders.assign` alongside their existing
@@ -429,6 +527,15 @@ stage (§3), you don't need either timeline source at all.
 - [ ] Legacy `status: "offered"`/`"arrived"` records still resolve to a sensible stage (§2, §3)
 - [ ] Cancel behaviour matches whatever product decides for §5.5 — not shipped silently as a bare
       status flip
+- [ ] Accept is blocked for `payment_method === "eft"` orders until `orders/{id}/payment.status ===
+      "paid"` (§5.6) — verified by actually trying to accept an unreviewed EFT order and confirming
+      it's refused, not just by reading the code
+- [ ] A "Proof of payment" review screen exists somewhere in the app for EFT orders, scoped to
+      `restaurant_id === session.restaurantId`, with Approve (disabled until `proof_url` exists) and
+      Reject (reason required) (§5.6)
+- [ ] Restaurant payment-method settings (§11) let a restaurant enable/disable EFT specifically — if
+      EFT is enabled, there had better be a working review screen (previous item) reachable by
+      someone, or orders will get stuck with no way to clear them
 - [ ] Realtime: orders update without a manual refresh (subscribe, don't poll)
 
 ---
@@ -459,13 +566,19 @@ yet" or "driver hasn't accepted"; "assigned" means either "heading to restaurant
 - Render badge text from the §3 table, matching the ops console's wording.
 
 ### 3. Actions (gate each behind the matching rm.* permission from §6)
-- pending: Accept / Reject (reason required) → rm.orders.manage
+- pending: Accept / Reject (reason required) → rm.orders.manage. Accept must first check §5.6's
+  proof-of-payment gate for payment_method === "eft" orders — do not skip this.
 - accepted → preparing → ready: kitchen advance → rm.kitchen.manage
 - unassigned / waiting_accept: assign or reassign a driver → rm.orders.assign (check this
   INDEPENDENTLY of rm.orders.manage — a user can have one without the other). Only list drivers with
   an active driverAssignments grant for this order's restaurant + branch (handover doc §5.3) —
   port the eligibility check from src/lib/drivers.firebase.ts, don't re-derive it.
 - at_restaurant only: optional "Mark picked up" fallback → rm.orders.manage
+- Proof of payment review (handover doc §5.6): a screen listing this restaurant's EFT orders with
+  evidence.status === "pending", with Approve (disabled until proof_url is set) and Reject (reason
+  required) → rm.payments.manage (no dedicated code exists yet — see §6).
+- Restaurant payment-method settings (handover doc §11): enable/disable card, cash_on_delivery,
+  cash_on_pickup, eft → rm.payments.view to see it, rm.payments.manage to change it.
 - Do NOT build the full Dispatch board here (bulk reassignment, ETA editing, live map) — that's a
   separate Delivery module (rm.delivery.*), out of scope for this task.
 - Cancel: implement the button, but confirm the actual cancellation side-effects with product first
@@ -473,12 +586,16 @@ yet" or "driver hasn't accepted"; "assigned" means either "heading to restaurant
 
 ### 4. Data layer
 - Reuse or port src/lib/orders.firebase.ts's setFirebaseOrderStatus / rejectFirebaseOrder,
-  src/lib/dispatch.functions.ts's orderStage, and src/lib/drivers.firebase.ts's
-  hasActiveAssignment / isDriverEligibleForBranch for the assign picker, exactly as documented.
-- Firestore paths: orders/{id}, orders/{id}/items/{lineId}. Do NOT use the driver app's inline
-  `timeline` array field for anything except reading it if you specifically need driver-side history —
-  see handover doc §7 for why it's a separate, unmerged log from this console's own
-  orders/{id}/timeline subcollection.
+  src/lib/dispatch.functions.ts's orderStage, src/lib/drivers.firebase.ts's
+  hasActiveAssignment / isDriverEligibleForBranch for the assign picker, and
+  src/lib/payments.firebase.ts's getOrderPaymentEvidence / markOrderPaid / rejectOrderPayment /
+  listOrdersAwaitingPaymentApproval / getPaymentConfig / savePaymentConfig, exactly as documented.
+- Firestore paths: orders/{id}, orders/{id}/items/{lineId}, orders/{id}/payment (payment evidence —
+  §5.6), restaurants/{id}/payment_config (§11). Do NOT use the driver app's inline `timeline` array
+  field for anything except reading it if you specifically need driver-side history — see handover
+  doc §7 for why it's a separate, unmerged log from this console's own orders/{id}/timeline
+  subcollection (itself unrelated to orders/{id}/payment — three different sub-records per order,
+  don't conflate them).
 
 ### 5. Realtime
 - Subscribe (Firestore onSnapshot), don't poll.
@@ -490,13 +607,18 @@ yet" or "driver hasn't accepted"; "assigned" means either "heading to restaurant
 - Do not invent new status or driver_status values.
 - Do not treat Firestore rules as sufficient restaurant-level access control.
 - Do not let rm.orders.manage imply rm.orders.assign, or vice versa — check them independently.
+- Do not let a proof-of-payment rejection also reject the order itself — those are separate actions.
+- Do not assume order.payment_method and payment-evidence method are the same enum (handover doc §2).
 
 ## Reference files (ForkFleet Console repo)
 - src/lib/orders.firebase.ts
 - src/lib/dispatch.functions.ts (orderStage, STAGE_LABEL, DispatchOrder)
 - src/routes/_authenticated/orders.tsx (reference UI + gating logic)
 - src/lib/drivers.firebase.ts (hasActiveAssignment, isDriverEligibleForBranch — driver eligibility)
-- src/lib/restaurant-permissions.ts (rm.orders.*, rm.kitchen.*, rm.delivery.*)
+- src/lib/payments.firebase.ts (proof-of-payment evidence + restaurant payment-method config)
+- src/routes/_authenticated/payments.tsx (reference "Proof of payment" tab UI)
+- src/components/restaurants/payment-methods-editor.tsx (reference payment-method toggle UI)
+- src/lib/restaurant-permissions.ts (rm.orders.*, rm.kitchen.*, rm.delivery.*, rm.payments.*)
 - docs/ORDER_WORKFLOW_HANDOVER.md (driver-app contract)
 - docs/KITCHEN_UI_RESTAURANT_MANAGEMENT_HANDOVER.md (kitchen advance flow — Firestore paths, not RTDB)
 ```
@@ -513,9 +635,62 @@ yet" or "driver hasn't accepted"; "assigned" means either "heading to restaurant
 | `src/routes/_authenticated/orders.tsx` | Reference Orders UI — stage badges, accept/reject, kitchen advance, driver assign/reassign, the "Mark picked up" fallback |
 | `src/routes/_authenticated/dispatch.tsx` | Reference Dispatch board — driver assignment, lane-by-stage layout (out of scope here, useful if you build Delivery too) |
 | `src/lib/kitchen.functions.ts` | Kitchen queue filter + mutations (see the older Kitchen handover doc) |
-| `src/lib/restaurant-permissions.ts` | `rm.orders.*`, `rm.kitchen.*`, `rm.delivery.*` permission codes |
+| `src/lib/payments.firebase.ts` | `OrderPaymentEvidence`, `getOrderPaymentEvidence`, `markOrderPaid`, `rejectOrderPayment`, `listOrdersAwaitingPaymentApproval`, `RestaurantPaymentConfig`, `PAYMENT_METHOD_CATALOG` — see §5.6 and §11 |
+| `src/routes/_authenticated/payments.tsx` | Reference "Proof of payment" tab UI — §5.6 |
+| `src/components/restaurants/payment-methods-editor.tsx` | Reference payment-method toggle UI — §11 |
+| `src/lib/restaurant-permissions.ts` | `rm.orders.*`, `rm.kitchen.*`, `rm.delivery.*`, `rm.payments.*` permission codes |
 | `src/lib/restaurant-users.firebase.ts` | Restaurant admin sign-in + `RestaurantUserSession.restaurantId` |
 | `firestore.rules` | Current (unscoped) restaurant access to `orders` — see §1.3 |
+
+---
+
+## 11. Restaurant payment-method configuration (added 2026-09-20)
+
+This is the restaurant-level settings piece that §5.6 depends on: a restaurant chooses *which*
+payment methods it accepts, and enabling EFT is what puts orders into the §5.6 review queue at all.
+This belongs in your Restaurant Admin app's own **Payments** section (`rm.payments.view` /
+`rm.payments.manage` — already reserved in `restaurant-permissions.ts`, described as "View payment
+methods and transaction history" / "Configure payment methods and reconcile"), separate from the
+order-review "Proof of payment" tab in §5.6 (which is about individual orders, not restaurant
+settings) — you may end up placing both under one "Payments" tab in your app; that's a UI choice, not
+a data-model one.
+
+**The data**, from `src/lib/payments.firebase.ts` — one record per restaurant at
+`restaurants/{restaurantId}/payment_config`:
+
+```ts
+export type PaymentMethodId = "card" | "cash_on_delivery" | "cash_on_pickup" | "eft";
+
+export interface PaymentMethodSetting {
+  enabled: boolean;
+  instructions: string | null; // optional customer-facing note
+}
+
+export interface RestaurantPaymentConfig {
+  restaurant_id: string;
+  methods: Record<PaymentMethodId, PaymentMethodSetting>;
+  updated_at: string;
+  updated_by: string | null;
+}
+```
+
+The **customer app** reads this config to decide which payment methods to *offer at checkout* for
+that restaurant — it is not itself part of the order-acceptance flow, but it's the reason an order
+ever has `payment_method: "eft"` in the first place. `PAYMENT_METHOD_CATALOG` in the same file is the
+static list of the four methods above plus their customer-facing labels/hints, and which order type
+(`delivery`/`pickup`) each applies to — card and EFT apply to both; `cash_on_delivery` is delivery
+only; `cash_on_pickup` is pickup only.
+
+**Reference functions** (all in `payments.firebase.ts`): `getPaymentConfig(restaurantId)`,
+`subscribePaymentConfig(restaurantId, cb)`, `savePaymentConfig({ restaurant_id, methods, updated_by })`
+— the last one requires at least one method to stay enabled (customers must always be able to pay
+somehow) and throws otherwise. When no config exists yet for a restaurant, `defaultPaymentConfig()`
+applies — card only, everything else off — so a restaurant that has never touched this screen still
+works correctly; don't treat a missing config as an error state.
+
+Reference UI to mirror: `src/components/restaurants/payment-methods-editor.tsx` (used inside this
+console's Restaurant detail page, gated there by platform permissions — map that to `rm.payments.view`
+/ `rm.payments.manage` in your app).
 
 ---
 
