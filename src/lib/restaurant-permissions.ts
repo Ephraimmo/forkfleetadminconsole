@@ -73,6 +73,12 @@ export const RESTAURANT_PERMISSIONS: RestaurantPermission[] = [
     actions: ["edit", "manage"],
   },
   {
+    code: "rm.orders.assign",
+    module: "orders",
+    description: "Assign or reassign a driver on a ready order",
+    actions: ["edit", "manage"],
+  },
+  {
     code: "rm.kitchen.view",
     module: "kitchen",
     description: "View the kitchen preparation queue",
@@ -222,6 +228,7 @@ grant("restaurant_manager", [
   "rm.menu.manage",
   "rm.orders.view",
   "rm.orders.manage",
+  "rm.orders.assign",
   "rm.kitchen.view",
   "rm.kitchen.manage",
   "rm.tables.view",
@@ -244,6 +251,7 @@ grant("branch_manager", [
   "rm.profile.view",
   "rm.orders.view",
   "rm.orders.manage",
+  "rm.orders.assign",
   "rm.kitchen.view",
   "rm.kitchen.manage",
   "rm.tables.view",
