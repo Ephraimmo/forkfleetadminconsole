@@ -58,6 +58,7 @@ import {
   getFirebaseDriver,
   isDriverEligibleForBranch,
 } from "@/lib/drivers.firebase";
+import { getOrderPaymentEvidence } from "@/lib/payments.firebase";
 import {
   auditLogs,
   drivers,
@@ -434,6 +435,18 @@ export async function acceptOrder(arg: { orderId: string } | { data: { orderId: 
   if (!order) throw new Error("Order not found");
   if (order.status !== "pending")
     throw new Error(`Cannot accept an order that is ${order.status.replace("_", " ")}`);
+  // EFT (bank transfer) orders must have their uploaded proof of payment
+  // reviewed and approved (the "Proof of payment" tab on /payments) before
+  // the order can be accepted — see listOrdersAwaitingPaymentApproval() /
+  // markOrderPaid() / rejectOrderPayment() in payments.firebase.ts.
+  if (order.payment_method === "eft") {
+    const evidence = await getOrderPaymentEvidence(order.id);
+    if (!evidence || evidence.status !== "paid") {
+      throw new Error(
+        "This order was paid by bank transfer — approve the uploaded proof of payment on the Payments page before accepting.",
+      );
+    }
+  }
   await setFirebaseOrderStatus({ orderId: order.id, status: "accepted", actor: currentActor() });
   logAudit({
     action: "order.status.accepted",

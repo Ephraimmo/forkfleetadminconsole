@@ -7,7 +7,8 @@
 // at checkout. When the record is missing, the safe default applies (card only),
 // so existing restaurants keep working unchanged until an operator opts in.
 
-import { isFirebaseAvailable, fsGet, fsSet, fsSubscribe } from "@/lib/firestore";
+import { isFirebaseAvailable, fsGet, fsSet, fsSubscribe, type FirestoreValue } from "@/lib/firestore";
+import { listFirebaseOrders } from "@/lib/orders.firebase";
 
 export type PaymentMethodId = "card" | "cash_on_delivery" | "cash_on_pickup" | "eft";
 export type OrderType = "delivery" | "pickup";
@@ -202,6 +203,11 @@ export interface OrderPaymentEvidence {
   card_last4: string | null; // last 4 digits only — never the full PAN
   paid_at: string | null;
   recorded_by: string | null; // "customer_app" | "driver" | "console" | email
+  /** Set when staff reject an uploaded proof of payment (status → "failed"). */
+  rejection_reason: string | null;
+  /** Who approved (marked paid) or rejected this evidence, and when. */
+  reviewed_by: string | null;
+  reviewed_at: string | null;
   updated_at: string;
 }
 
@@ -240,6 +246,9 @@ export function synthesizePaymentEvidence(order: {
     card_last4: null,
     paid_at: null,
     recorded_by: null,
+    rejection_reason: null,
+    reviewed_by: null,
+    reviewed_at: null,
     updated_at: "",
   };
 }
@@ -255,8 +264,15 @@ export function subscribeOrderPayment(
   return fsSubscribe<OrderPaymentEvidence | null>(paymentPath(orderId), (v) => cb(v ?? null));
 }
 
-/** Mark an order's payment as PAID (cash handover), merging any existing
- *  evidence kept by the customer app. Also syncs order.payment_status. */
+/** One-shot read of an order's payment evidence (null if none recorded yet). */
+export async function getOrderPaymentEvidence(orderId: string): Promise<OrderPaymentEvidence | null> {
+  if (!isFirebaseAvailable()) return null;
+  return (await fsGet<OrderPaymentEvidence>(paymentPath(orderId))) ?? null;
+}
+
+/** Mark an order's payment as PAID — cash handover, or approving a reviewed
+ *  proof of payment (EFT). Merges any existing evidence kept by the customer
+ *  app. Also syncs order.payment_status. */
 export async function markOrderPaid(input: {
   order_id: string;
   order_number: string;
@@ -282,12 +298,80 @@ export async function markOrderPaid(input: {
     card_last4: existing?.card_last4 ?? null,
     paid_at: ts,
     recorded_by: input.recorded_by ?? "console",
+    rejection_reason: null,
+    reviewed_by: input.recorded_by ?? "console",
+    reviewed_at: ts,
     updated_at: ts,
   };
-  await fsSet(
-    paymentPath(input.order_id),
-    record as unknown as import("@/lib/firestore").FirestoreValue,
-  );
+  await fsSet(paymentPath(input.order_id), record as unknown as FirestoreValue);
   await fsSet(`orders/${input.order_id}/payment_status`, "paid");
   return record;
+}
+
+/** Reject an uploaded proof of payment (EFT) — status → "failed", with a
+ *  mandatory reason. Does NOT change the order's own status; staff decide
+ *  separately whether to reject/cancel the order itself. */
+export async function rejectOrderPayment(input: {
+  order_id: string;
+  reason: string;
+  actor?: string | null;
+}): Promise<OrderPaymentEvidence> {
+  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
+  const reason = input.reason.trim();
+  if (!reason) throw new Error("A rejection reason is required.");
+  const existing = await fsGet<OrderPaymentEvidence>(paymentPath(input.order_id));
+  if (!existing) throw new Error("No payment evidence found for this order.");
+  const ts = new Date().toISOString();
+  const record: OrderPaymentEvidence = {
+    ...existing,
+    status: "failed",
+    rejection_reason: reason,
+    reviewed_by: input.actor ?? "console",
+    reviewed_at: ts,
+    updated_at: ts,
+  };
+  await fsSet(paymentPath(input.order_id), record as unknown as FirestoreValue);
+  await fsSet(`orders/${input.order_id}/payment_status`, "failed");
+  return record;
+}
+
+export interface PaymentApprovalRow {
+  order_id: string;
+  order_number: string;
+  restaurant_name: string;
+  customer_name: string;
+  total: number;
+  placed_at: string;
+  order_status: string;
+  evidence: OrderPaymentEvidence;
+}
+
+/**
+ * Orders paid by bank transfer (EFT) whose proof of payment is still
+ * "pending" staff review — the queue behind the Payments page's "Proof of
+ * payment" tab. An order in this list may NOT be accepted on the Orders page
+ * until it's approved here (see acceptOrder() in dispatch.functions.ts).
+ */
+export async function listOrdersAwaitingPaymentApproval(): Promise<PaymentApprovalRow[]> {
+  if (!isFirebaseAvailable()) return [];
+  const payloads = await listFirebaseOrders();
+  const eftOrders = payloads.filter((p) => p.order.payment_method === "eft");
+  const rows = await Promise.all(
+    eftOrders.map(async (p) => {
+      const evidence = (await getOrderPaymentEvidence(p.order.id)) ?? synthesizePaymentEvidence(p.order);
+      return {
+        order_id: p.order.id,
+        order_number: p.order.order_number,
+        restaurant_name: p.order.restaurant_name,
+        customer_name: p.order.customer_name,
+        total: p.order.total,
+        placed_at: p.order.placed_at,
+        order_status: p.order.status,
+        evidence,
+      };
+    }),
+  );
+  return rows
+    .filter((r) => r.evidence.status === "pending")
+    .sort((a, b) => a.placed_at.localeCompare(b.placed_at));
 }

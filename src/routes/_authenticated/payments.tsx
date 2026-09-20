@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@/lib/use-demo-fn";
+import { toast } from "sonner";
 import {
   CreditCard,
   Wallet,
@@ -17,6 +18,10 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
+  Landmark,
+  ExternalLink,
+  Loader2,
+  FileText,
 } from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
@@ -24,6 +29,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -31,6 +38,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -54,6 +69,13 @@ import {
   restaurants as seededRestaurants,
 } from "@/lib/demo-store";
 import { money, money2, number0 } from "@/lib/demo-formatters";
+import {
+  listOrdersAwaitingPaymentApproval,
+  markOrderPaid,
+  paymentMethodLabel,
+  rejectOrderPayment,
+  type PaymentApprovalRow,
+} from "@/lib/payments.firebase";
 
 export const Route = createFileRoute("/_authenticated/payments")({
   head: () => ({
@@ -78,9 +100,50 @@ function PaymentsPage() {
   const [tab, setTab] = useState("overview");
   const [status, setStatus] = useState("all");
   const [search, setSearch] = useState("");
+  const [rejectTarget, setRejectTarget] = useState<PaymentApprovalRow | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  const queryClient = useQueryClient();
 
   const fetchDrivers = useServerFn(listDrivers);
   const driversQuery = useQuery({ queryKey: ["drivers-payments"], queryFn: () => fetchDrivers({}) });
+
+  const approvalsQuery = useQuery({
+    queryKey: ["payment-approvals"],
+    queryFn: () => listOrdersAwaitingPaymentApproval(),
+    refetchInterval: 15_000,
+  });
+  const paymentApprovals = approvalsQuery.data ?? [];
+
+  const invalidateApprovals = () => void queryClient.invalidateQueries({ queryKey: ["payment-approvals"] });
+
+  const approveMutation = useMutation({
+    mutationFn: (vars: { row: PaymentApprovalRow; actor: string | null }) =>
+      markOrderPaid({
+        order_id: vars.row.order_id,
+        order_number: vars.row.order_number,
+        total: vars.row.total,
+        payment_method: "eft",
+        recorded_by: vars.actor,
+      }),
+    onSuccess: (_r, vars) => {
+      toast.success(`${vars.row.order_number} approved — the order can now be accepted.`);
+      invalidateApprovals();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: (vars: { orderId: string; reason: string; actor: string | null }) =>
+      rejectOrderPayment({ order_id: vars.orderId, reason: vars.reason, actor: vars.actor }),
+    onSuccess: () => {
+      toast.success("Proof of payment rejected.");
+      setRejectTarget(null);
+      setRejectReason("");
+      invalidateApprovals();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
   const { delivered, refunded, revenueByDay, methodMix, transactions } = useMemo(() => {
     const delivered = seededOrders.filter((o) => o.status === "delivered");
@@ -182,7 +245,7 @@ function PaymentsPage() {
         </div>
       }
     >
-      {() => (
+      {(staff) => (
         <div className="space-y-4">
           {/* KPI strip */}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -201,6 +264,14 @@ function PaymentsPage() {
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
               <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="proof" className="gap-1.5">
+                Proof of payment
+                {paymentApprovals.length > 0 && (
+                  <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">
+                    {paymentApprovals.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
               <TabsTrigger value="transactions">Transactions</TabsTrigger>
               <TabsTrigger value="settlements">Settlements</TabsTrigger>
               <TabsTrigger value="payouts">Driver payouts</TabsTrigger>
@@ -303,6 +374,106 @@ function PaymentsPage() {
                   </CardContent>
                 </Card>
               </div>
+            </TabsContent>
+
+            <TabsContent value="proof" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Proof of payment approvals</CardTitle>
+                  <CardDescription>
+                    Orders paid by bank transfer (EFT) — the customer's uploaded proof must be
+                    approved here before the order can be accepted on the Orders page.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {approvalsQuery.isLoading && (
+                    <p className="py-8 text-center text-xs text-muted-foreground">Loading…</p>
+                  )}
+                  {!approvalsQuery.isLoading && paymentApprovals.length === 0 && (
+                    <p className="py-8 text-center text-xs text-muted-foreground">
+                      Nothing waiting on review — every EFT order's proof of payment has been
+                      approved or rejected.
+                    </p>
+                  )}
+                  {paymentApprovals.map((row) => {
+                    const isApproving =
+                      approveMutation.isPending &&
+                      approveMutation.variables?.row.order_id === row.order_id;
+                    return (
+                      <div
+                        key={row.order_id}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="flex size-9 items-center justify-center rounded-md bg-muted">
+                            <Landmark className="size-4 text-amber-400" />
+                          </span>
+                          <div>
+                            <p className="text-sm font-medium">
+                              {row.order_number}
+                              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                {row.restaurant_name} · {row.customer_name}
+                              </span>
+                            </p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {paymentMethodLabel(row.evidence.method)} · placed{" "}
+                              {new Date(row.placed_at).toLocaleString("en-ZA", {
+                                dateStyle: "medium",
+                                timeStyle: "short",
+                              })}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold tabular-nums">{money2(row.total)}</p>
+                          {row.evidence.proof_url ? (
+                            <a
+                              href={row.evidence.proof_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                            >
+                              <FileText className="size-3.5" /> View document{" "}
+                              <ExternalLink className="size-3" />
+                            </a>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                              No document uploaded yet
+                            </Badge>
+                          )}
+                          {staff.hasPermission("finance.manage") && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => setRejectTarget(row)}
+                                disabled={rejectMutation.isPending || isApproving}
+                              >
+                                <XCircle className="mr-1 size-3.5" /> Reject
+                              </Button>
+                              <Button
+                                size="sm"
+                                disabled={!row.evidence.proof_url || isApproving}
+                                onClick={() =>
+                                  approveMutation.mutate({ row, actor: staff.session?.email ?? null })
+                                }
+                              >
+                                {isApproving ? (
+                                  <Loader2 className="mr-1 size-3.5 animate-spin" />
+                                ) : (
+                                  <CheckCircle2 className="mr-1 size-3.5" />
+                                )}
+                                Approve
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </CardContent>
+              </Card>
             </TabsContent>
 
             <TabsContent value="transactions" className="mt-4 space-y-4">
@@ -455,6 +626,69 @@ function PaymentsPage() {
               </Card>
             </TabsContent>
           </Tabs>
+
+          <Dialog
+            open={Boolean(rejectTarget)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setRejectTarget(null);
+                setRejectReason("");
+              }
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <XCircle className="size-4 text-destructive" /> Reject proof of payment —{" "}
+                  {rejectTarget?.order_number}
+                </DialogTitle>
+                <DialogDescription>
+                  The order stays unaccepted. Staff decide separately whether to also reject or
+                  cancel the order itself.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-1.5">
+                <Label htmlFor="pop-reject-reason">Reason for rejection</Label>
+                <Textarea
+                  id="pop-reject-reason"
+                  rows={3}
+                  placeholder="e.g. Amount doesn't match the order total / Document is illegible / No proof uploaded…"
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                />
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setRejectTarget(null);
+                    setRejectReason("");
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={!rejectReason.trim() || rejectMutation.isPending}
+                  onClick={() =>
+                    rejectTarget &&
+                    rejectMutation.mutate({
+                      orderId: rejectTarget.order_id,
+                      reason: rejectReason,
+                      actor: staff.session?.email ?? null,
+                    })
+                  }
+                >
+                  {rejectMutation.isPending ? (
+                    <Loader2 className="mr-1.5 size-4 animate-spin" />
+                  ) : (
+                    <XCircle className="mr-1.5 size-4" />
+                  )}
+                  Reject
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       )}
     </PermissionGate>
