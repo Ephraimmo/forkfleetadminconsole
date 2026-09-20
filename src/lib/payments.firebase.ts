@@ -17,6 +17,10 @@ export interface PaymentMethodSetting {
   enabled: boolean;
   /** Optional customer-facing note, e.g. "Please have exact change ready." */
   instructions: string | null;
+  /** Card only — Stripe API keys used by the customer app at checkout.
+   *  camelCase is deliberate (matches the field already live in production). */
+  stripePublishableKey?: string;
+  stripeSecretKey?: string;
 }
 
 export interface RestaurantPaymentConfig {
@@ -43,10 +47,9 @@ export const PAYMENT_METHOD_CATALOG: {
 }[] = [
   {
     id: "card",
-    label: "Card payment",
+    label: "Card Payment (Stripe)",
     customer_hint: "Pay securely online",
-    description:
-      "Customers pay online at checkout (Visa, Mastercard or instant EFT). Paid before the order reaches the kitchen.",
+    description: "Customers pay via Stripe checkout",
     applies_to: ["delivery", "pickup"],
   },
   {
@@ -80,7 +83,12 @@ export function defaultPaymentConfig(restaurantId: string): RestaurantPaymentCon
   return {
     restaurant_id: restaurantId,
     methods: {
-      card: { enabled: true, instructions: null },
+      card: {
+        enabled: true,
+        instructions: null,
+        stripePublishableKey: "",
+        stripeSecretKey: "",
+      },
       cash_on_delivery: { enabled: false, instructions: null },
       cash_on_pickup: { enabled: false, instructions: null },
       eft: { enabled: false, instructions: null },
@@ -105,6 +113,12 @@ export function resolvePaymentConfig(
       methods[id] = {
         enabled: Boolean(m.enabled),
         instructions: m.instructions ?? null,
+        ...(id === "card"
+          ? {
+              stripePublishableKey: m.stripePublishableKey ?? "",
+              stripeSecretKey: m.stripeSecretKey ?? "",
+            }
+          : {}),
       };
     }
   }
@@ -166,6 +180,12 @@ export async function savePaymentConfig(input: {
         {
           enabled: Boolean(input.methods[id]?.enabled),
           instructions: (input.methods[id]?.instructions ?? "").trim() || null,
+          ...(id === "card"
+            ? {
+                stripePublishableKey: (input.methods[id]?.stripePublishableKey ?? "").trim(),
+                stripeSecretKey: (input.methods[id]?.stripeSecretKey ?? "").trim(),
+              }
+            : {}),
         },
       ]),
     ) as Record<PaymentMethodId, PaymentMethodSetting>,

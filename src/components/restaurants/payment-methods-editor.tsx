@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import {
   Banknote,
   CreditCard,
+  Eye,
+  EyeOff,
   Landmark,
   Loader2,
   RefreshCw,
@@ -56,6 +58,7 @@ export function PaymentMethodsEditor({
   const [draft, setDraft] = useState<Record<PaymentMethodId, PaymentMethodSetting>>(config.methods);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showStripeSecret, setShowStripeSecret] = useState(false);
 
   // Re-derive the draft when the saved config changes remotely — but never
   // clobber unsaved edits.
@@ -152,20 +155,77 @@ export function PaymentMethodsEditor({
                       )}
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{method.description}</p>
-                    {state.enabled && canManage && (
-                      <Input
-                        className="mt-2.5 h-8 max-w-md text-xs"
-                        placeholder="Optional customer note — e.g. Please have exact change ready"
-                        value={state.instructions ?? ""}
-                        onChange={(e) =>
-                          setMethod(method.id, { instructions: e.target.value || null })
-                        }
-                      />
-                    )}
-                    {state.enabled && !canManage && state.instructions && (
-                      <p className="mt-1.5 text-xs italic text-muted-foreground">
-                        “{state.instructions}”
-                      </p>
+                    {method.id === "card" ? (
+                      state.enabled &&
+                      canManage && (
+                        <div className="mt-3 space-y-3">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-foreground">
+                              Stripe Publishable Key
+                            </label>
+                            <Input
+                              className="h-9 max-w-md font-mono text-xs"
+                              placeholder="pk_live_... or pk_test_..."
+                              value={state.stripePublishableKey ?? ""}
+                              onChange={(e) =>
+                                setMethod(method.id, { stripePublishableKey: e.target.value })
+                              }
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-foreground">
+                              Stripe Secret Key
+                            </label>
+                            <div className="relative max-w-md">
+                              <Input
+                                className="h-9 pr-9 font-mono text-xs"
+                                type={showStripeSecret ? "text" : "password"}
+                                placeholder="sk_live_... or sk_test_..."
+                                value={state.stripeSecretKey ?? ""}
+                                onChange={(e) =>
+                                  setMethod(method.id, { stripeSecretKey: e.target.value })
+                                }
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowStripeSecret((v) => !v)}
+                                className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground hover:text-foreground"
+                                aria-label={
+                                  showStripeSecret ? "Hide secret key" : "Show secret key"
+                                }
+                              >
+                                {showStripeSecret ? (
+                                  <EyeOff className="size-3.5" />
+                                ) : (
+                                  <Eye className="size-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Keys are saved to Firebase and used by the customer app for Stripe
+                            checkout.
+                          </p>
+                        </div>
+                      )
+                    ) : (
+                      <>
+                        {state.enabled && canManage && (
+                          <Input
+                            className="mt-2.5 h-8 max-w-md text-xs"
+                            placeholder="Optional customer note — e.g. Please have exact change ready"
+                            value={state.instructions ?? ""}
+                            onChange={(e) =>
+                              setMethod(method.id, { instructions: e.target.value || null })
+                            }
+                          />
+                        )}
+                        {state.enabled && !canManage && state.instructions && (
+                          <p className="mt-1.5 text-xs italic text-muted-foreground">
+                            “{state.instructions}”
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
                   <Switch
