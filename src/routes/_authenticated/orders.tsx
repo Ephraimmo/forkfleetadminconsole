@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@/lib/use-demo-fn";
@@ -90,6 +90,7 @@ import {
 } from "@/lib/drivers.firebase";
 import { subscribeAllBranches, type RestaurantBranch } from "@/lib/branches.firebase";
 import { useDriverFleet, type DriverRow } from "@/hooks/use-driver-fleet";
+import { listOrdersAwaitingPaymentApproval } from "@/lib/payments.firebase";
 
 export const Route = createFileRoute("/_authenticated/orders")({
   head: () => ({
@@ -231,6 +232,19 @@ function OrdersPage() {
     const unsub = subscribeAllBranches(setBranchRegistry);
     return unsub;
   }, []);
+
+  // Orders paid by bank transfer whose proof of payment hasn't been approved
+  // yet — Accept must be hidden for these (see Payments → Proof of payment).
+  const paymentApprovalsQuery = useQuery({
+    queryKey: ["payment-approvals"],
+    queryFn: () => listOrdersAwaitingPaymentApproval(),
+    refetchInterval: 15_000,
+  });
+  const paymentHoldOrderIds = useMemo(
+    () => new Set((paymentApprovalsQuery.data ?? []).map((r) => r.order_id)),
+    [paymentApprovalsQuery.data],
+  );
+
   const trailQuery = useQuery({
     queryKey: ["order-audit", trailOrder?.id],
     queryFn: () => fetchAudit({ entityType: "order", entityId: trailOrder?.id ?? "", limit: 50 }),
@@ -418,6 +432,7 @@ function OrdersPage() {
                     drivers={drivers}
                     activeAssignments={activeAssignments}
                     branchRegistry={branchRegistry}
+                    paymentHoldOrderIds={paymentHoldOrderIds}
                     canManage={canManage}
                     onAssign={(orderId, driverId) => assignMutation.mutate({ orderId, driverId })}
                     onAdvance={(orderId, next) =>
@@ -441,6 +456,7 @@ function OrdersPage() {
                     drivers={drivers}
                     activeAssignments={activeAssignments}
                     branchRegistry={branchRegistry}
+                    paymentHoldOrderIds={paymentHoldOrderIds}
                     canManage={canManage}
                     onAssign={(orderId, driverId) => assignMutation.mutate({ orderId, driverId })}
                     onAdvance={(orderId, next) =>
@@ -653,6 +669,7 @@ function OrdersTable({
   drivers,
   activeAssignments,
   branchRegistry,
+  paymentHoldOrderIds,
   canManage,
   onAssign,
   onAdvance,
@@ -667,6 +684,7 @@ function OrdersTable({
   drivers: DriverRow[];
   activeAssignments: DriverAssignment[];
   branchRegistry: Record<string, RestaurantBranch[]>;
+  paymentHoldOrderIds: Set<string>;
   canManage: boolean;
   onAssign: (orderId: string, driverId: string) => void;
   onAdvance: (orderId: string, next: OrderStatus) => void;
@@ -698,6 +716,7 @@ function OrdersTable({
             const action = nextActionFor(order);
             const isIncoming = order.status === "pending";
             const hasNotes = orderHasNotes(order);
+            const awaitingPayment = paymentHoldOrderIds.has(order.id);
             return (
               <TableRow key={order.id} className={isIncoming ? "bg-slate-500/5" : ""}>
                 <TableCell className="font-medium">
@@ -722,6 +741,11 @@ function OrdersTable({
                   <Badge variant="outline" className={STAGE_TONE[stage]}>
                     {STAGE_LABEL[stage]}
                   </Badge>
+                  {awaitingPayment && (
+                    <p className="mt-1 text-[10px] text-amber-400">
+                      Waiting for payment to be approved
+                    </p>
+                  )}
                 </TableCell>
                 <TableCell>
                   {canManage &&
@@ -766,14 +790,20 @@ function OrdersTable({
                   <div className="flex flex-wrap justify-end gap-1">
                     {canManage && isIncoming && (
                       <>
-                        <Button
-                          size="sm"
-                          variant="default"
-                          onClick={() => onAccept(order.id)}
-                          disabled={isPending}
-                        >
-                          <CheckCircle2 className="mr-1 size-3.5" /> Accept
-                        </Button>
+                        {awaitingPayment ? (
+                          <span className="text-[11px] text-amber-400">
+                            Waiting for payment to be approved
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => onAccept(order.id)}
+                            disabled={isPending}
+                          >
+                            <CheckCircle2 className="mr-1 size-3.5" /> Accept
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="destructive"
@@ -891,6 +921,7 @@ function OrdersCards({
   drivers,
   activeAssignments,
   branchRegistry,
+  paymentHoldOrderIds,
   canManage,
   onAssign,
   onAdvance,
@@ -905,6 +936,7 @@ function OrdersCards({
   drivers: DriverRow[];
   activeAssignments: DriverAssignment[];
   branchRegistry: Record<string, RestaurantBranch[]>;
+  paymentHoldOrderIds: Set<string>;
   canManage: boolean;
   onAssign: (orderId: string, driverId: string) => void;
   onAdvance: (orderId: string, next: OrderStatus) => void;
@@ -958,6 +990,7 @@ function OrdersCards({
                   drivers={drivers}
                   activeAssignments={activeAssignments}
                   branchRegistry={branchRegistry}
+                  paymentHoldOrderIds={paymentHoldOrderIds}
                   canManage={canManage}
                   onAssign={onAssign}
                   onAdvance={onAdvance}
@@ -981,6 +1014,7 @@ function OrderCard({
   drivers,
   activeAssignments,
   branchRegistry,
+  paymentHoldOrderIds,
   canManage,
   onAssign,
   onAdvance,
@@ -995,6 +1029,7 @@ function OrderCard({
   drivers: DriverRow[];
   activeAssignments: DriverAssignment[];
   branchRegistry: Record<string, RestaurantBranch[]>;
+  paymentHoldOrderIds: Set<string>;
   canManage: boolean;
   onAssign: (orderId: string, driverId: string) => void;
   onAdvance: (orderId: string, next: OrderStatus) => void;
@@ -1009,6 +1044,7 @@ function OrderCard({
   // Honour the fulfilment type: pickup orders move collected → closed,
   // never through the driver-only "on the way" step.
   const action = nextActionFor(order);
+  const awaitingPayment = paymentHoldOrderIds.has(order.id);
   const waited = Math.max(
     0,
     Math.round((Date.now() - new Date(order.placed_at).getTime()) / 60000),
@@ -1039,6 +1075,11 @@ function OrderCard({
           <Badge variant="outline" className={STAGE_TONE[stage]}>
             {STAGE_LABEL[stage]}
           </Badge>
+          {awaitingPayment && (
+            <p className="text-right text-[10px] text-amber-400">
+              Waiting for payment to be approved
+            </p>
+          )}
           <Badge variant={waited > 25 ? "destructive" : "secondary"} className="text-[10px]">
             {waited}m
           </Badge>
@@ -1134,14 +1175,20 @@ function OrderCard({
       <div className="mt-3 flex flex-wrap gap-2">
         {canManage && isIncoming && (
           <>
-            <Button
-              size="sm"
-              className="flex-1"
-              onClick={() => onAccept(order.id)}
-              disabled={isPending}
-            >
-              <CheckCircle2 className="mr-1 size-3.5" /> Accept
-            </Button>
+            {awaitingPayment ? (
+              <span className="flex-1 text-[11px] text-amber-400">
+                Waiting for payment to be approved
+              </span>
+            ) : (
+              <Button
+                size="sm"
+                className="flex-1"
+                onClick={() => onAccept(order.id)}
+                disabled={isPending}
+              >
+                <CheckCircle2 className="mr-1 size-3.5" /> Accept
+              </Button>
+            )}
             <Button
               size="sm"
               variant="destructive"
