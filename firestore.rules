@@ -140,6 +140,12 @@ service cloud.firestore {
       allow write: if isPlatformAdmin() || isAnyRestaurantMember();
     }
 
+    // Weekly driver payout ledger (Payments -> Driver payouts). Platform-only
+    // — restaurants have no stake in what drivers are paid.
+    match /driver_payouts/{doc} {
+      allow read, write: if isPlatformAdmin();
+    }
+
     // ------------------------------------------- promotions & loyalty
     match /promotions/{doc} {
       allow read: if signedIn();

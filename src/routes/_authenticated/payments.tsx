@@ -1,21 +1,15 @@
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useServerFn } from "@/lib/use-demo-fn";
 import { toast } from "sonner";
 import {
-  CreditCard,
-  Wallet,
-  ArrowDownLeft,
   ArrowUpRight,
   Receipt,
   Banknote,
   TrendingUp,
-  TrendingDown,
   RefreshCw,
   Download,
   Search,
-  Clock,
   CheckCircle2,
   XCircle,
   Landmark,
@@ -62,13 +56,23 @@ import {
   Legend,
 } from "recharts";
 
-import { listDrivers } from "@/lib/dispatch.functions";
-import {
-  drivers as seededDrivers,
-  orders as seededOrders,
-  restaurants as seededRestaurants,
-} from "@/lib/demo-store";
 import { money, money2, number0 } from "@/lib/demo-formatters";
+import { listFirebaseOrders, type FirebaseOrder } from "@/lib/orders.firebase";
+import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
+import {
+  PERIOD_LABEL,
+  resolvePeriodRange,
+  summarizeRestaurantSettlements,
+  summarizeRevenue,
+  type DateRange,
+  type PeriodGranularity,
+} from "@/lib/finance.firebase";
+import {
+  computeDriverPayouts,
+  DRIVER_COMMISSION_PER_DELIVERY,
+  markDriverPayoutPaid,
+  type DriverPayoutRecord,
+} from "@/lib/driver-payouts.firebase";
 import {
   listOrdersAwaitingPaymentApproval,
   markOrderPaid,
@@ -96,6 +100,26 @@ const statusTone: Record<string, string> = {
   processing: "bg-sky-500/15 text-sky-400 border-sky-500/30",
 };
 
+const TX_STATUS_TONE: Record<string, string> = {
+  delivered: statusTone["settled"]!,
+  refunded: statusTone["processing"]!,
+  cancelled: statusTone["failed"]!,
+};
+
+/** Resolve a granularity + optional custom bounds into a concrete range,
+ *  falling back to "this week" until both custom dates are picked. */
+function usePeriodRange(granularity: PeriodGranularity, customStart: string, customEnd: string): DateRange {
+  return useMemo(() => {
+    if (granularity === "custom") {
+      if (customStart && customEnd) {
+        return resolvePeriodRange("custom", { start: new Date(customStart), end: new Date(customEnd) });
+      }
+      return resolvePeriodRange("week");
+    }
+    return resolvePeriodRange(granularity);
+  }, [granularity, customStart, customEnd]);
+}
+
 function PaymentsPage() {
   const [tab, setTab] = useState("overview");
   const [status, setStatus] = useState("all");
@@ -103,10 +127,124 @@ function PaymentsPage() {
   const [rejectTarget, setRejectTarget] = useState<PaymentApprovalRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
+  const [revenueGranularity, setRevenueGranularity] = useState<PeriodGranularity>("week");
+  const [revenueCustomStart, setRevenueCustomStart] = useState("");
+  const [revenueCustomEnd, setRevenueCustomEnd] = useState("");
+  const revenueRange = usePeriodRange(revenueGranularity, revenueCustomStart, revenueCustomEnd);
+
+  const [payoutGranularity, setPayoutGranularity] = useState<PeriodGranularity>("week");
+  const [payoutCustomStart, setPayoutCustomStart] = useState("");
+  const [payoutCustomEnd, setPayoutCustomEnd] = useState("");
+  const payoutRange = usePeriodRange(payoutGranularity, payoutCustomStart, payoutCustomEnd);
+
   const queryClient = useQueryClient();
 
-  const fetchDrivers = useServerFn(listDrivers);
-  const driversQuery = useQuery({ queryKey: ["drivers-payments"], queryFn: () => fetchDrivers({}) });
+  const ordersQuery = useQuery({
+    queryKey: ["orders-all"],
+    queryFn: () => listFirebaseOrders(),
+    refetchInterval: 30_000,
+  });
+  const orders = useMemo<FirebaseOrder[]>(
+    () => (ordersQuery.data ?? []).map((p) => p.order),
+    [ordersQuery.data],
+  );
+  const { rows: restaurantRows } = useFirebaseRestaurants();
+
+  const revenue = useMemo(() => summarizeRevenue(orders, revenueRange), [orders, revenueRange]);
+  const settlements = useMemo(
+    () => summarizeRestaurantSettlements(orders, restaurantRows, revenueRange),
+    [orders, restaurantRows, revenueRange],
+  );
+  const methodMix = useMemo(
+    () => revenue.byMethod.map((m) => ({ name: m.method.toUpperCase(), value: m.orders })),
+    [revenue.byMethod],
+  );
+
+  const payoutsQuery = useQuery({
+    queryKey: ["driver-payouts", payoutRange.start.toISOString(), payoutRange.end.toISOString(), orders.length],
+    queryFn: () => computeDriverPayouts(orders, payoutRange),
+    enabled: ordersQuery.data !== undefined,
+  });
+  const payouts = payoutsQuery.data ?? [];
+  const pendingPayouts = useMemo(() => payouts.filter((p) => p.status === "pending"), [payouts]);
+  const invalidatePayouts = () => void queryClient.invalidateQueries({ queryKey: ["driver-payouts"] });
+
+  const markPaidMutation = useMutation({
+    mutationFn: (vars: { row: DriverPayoutRecord; actor: string | null }) =>
+      markDriverPayoutPaid({
+        driver_id: vars.row.driver_id,
+        driver_name: vars.row.driver_name,
+        range: payoutRange,
+        deliveries: vars.row.deliveries,
+        gross_delivery_fees: vars.row.gross_delivery_fees,
+        commission: vars.row.commission,
+        amount_due: vars.row.amount_due,
+        actor: vars.actor,
+      }),
+    onSuccess: (_r, vars) => {
+      toast.success(`${vars.row.driver_name} marked as paid.`);
+      invalidatePayouts();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const payAllMutation = useMutation({
+    mutationFn: async (vars: { rows: DriverPayoutRecord[]; actor: string | null }) => {
+      await Promise.all(
+        vars.rows.map((row) =>
+          markDriverPayoutPaid({
+            driver_id: row.driver_id,
+            driver_name: row.driver_name,
+            range: payoutRange,
+            deliveries: row.deliveries,
+            gross_delivery_fees: row.gross_delivery_fees,
+            commission: row.commission,
+            amount_due: row.amount_due,
+            actor: vars.actor,
+          }),
+        ),
+      );
+    },
+    onSuccess: (_r, vars) => {
+      toast.success(`Paid ${vars.rows.length} driver${vars.rows.length === 1 ? "" : "s"}.`);
+      invalidatePayouts();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const transactionRows = useMemo(() => {
+    return orders
+      .filter((o) => o.status === "delivered" || o.status === "refunded" || o.status === "cancelled")
+      .slice()
+      .sort((a, b) =>
+        (b.delivered_at ?? b.cancelled_at ?? b.placed_at).localeCompare(
+          a.delivered_at ?? a.cancelled_at ?? a.placed_at,
+        ),
+      );
+  }, [orders]);
+
+  const filteredTx = useMemo(
+    () =>
+      transactionRows
+        .filter((o) => status === "all" || o.status === status)
+        .filter(
+          (o) =>
+            !search ||
+            o.order_number.toLowerCase().includes(search.toLowerCase()) ||
+            o.restaurant_name.toLowerCase().includes(search.toLowerCase()) ||
+            o.customer_name.toLowerCase().includes(search.toLowerCase()),
+        ),
+    [transactionRows, status, search],
+  );
+
+  const refundedOrders = useMemo(
+    () =>
+      orders
+        .filter((o) => o.status === "refunded" || o.status === "cancelled")
+        .slice()
+        .sort((a, b) => (b.cancelled_at ?? b.placed_at).localeCompare(a.cancelled_at ?? a.placed_at)),
+    [orders],
+  );
 
   const approvalsQuery = useQuery({
     queryKey: ["payment-approvals"],
@@ -145,89 +283,6 @@ function PaymentsPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const { delivered, refunded, revenueByDay, methodMix, transactions } = useMemo(() => {
-    const delivered = seededOrders.filter((o) => o.status === "delivered");
-    const refunded = seededOrders.filter((o) => o.status === "refunded" || o.status === "cancelled");
-    const gmv = delivered.reduce((s, o) => s + o.total, 0);
-    const commission = delivered.reduce((s, o) => s + o.commission, 0);
-    const deliveryFees = delivered.reduce((s, o) => s + o.delivery_fee, 0);
-    const refunds = refunded.reduce((s, o) => s + o.total, 0);
-
-    // Last 14 days pseudo-trend from delivered orders
-    const byDay = new Map<string, { day: string; revenue: number; orders: number }>();
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      const key = d.toISOString().slice(0, 10);
-      byDay.set(key, { day: key.slice(5), revenue: 0, orders: 0 });
-    }
-    for (const o of delivered) {
-      const key = o.placed_at.slice(0, 10);
-      const entry = byDay.get(key);
-      if (entry) {
-        entry.revenue += o.total;
-        entry.orders += 1;
-      }
-    }
-    const revenueByDay = Array.from(byDay.values());
-
-    // Mix of payment methods
-    const methods = new Map<string, number>();
-    for (const o of delivered) methods.set(o.payment_method, (methods.get(o.payment_method) ?? 0) + 1);
-    const methodMix = Array.from(methods.entries()).map(([name, value]) => ({ name: name.toUpperCase(), value }));
-
-    // Transactions table — take last 25 delivered orders
-    const txs = delivered
-      .slice()
-      .sort((a, b) => b.placed_at.localeCompare(a.placed_at))
-      .slice(0, 40)
-      .map((o, idx) => {
-        const statuses = ["settled", "pending", "settled", "processing", "settled", "failed"] as const;
-        const s = statuses[idx % statuses.length]!;
-        return {
-          id: `TX-${(10000 + idx).toString()}`,
-          order: o.order_number,
-          restaurant: seededRestaurants.find((r) => r.id === o.restaurant_id)?.name ?? "—",
-          method: o.payment_method,
-          total: o.total,
-          commission: o.commission,
-          delivery: o.delivery_fee,
-          status: s,
-          date: o.delivered_at ?? o.placed_at,
-        };
-      });
-
-    return {
-      delivered,
-      refunded,
-      gmv,
-      commission,
-      deliveryFees,
-      refunds,
-      revenueByDay,
-      methodMix,
-      transactions: txs,
-    };
-  }, []);
-
-  const driverPayouts = useMemo(
-    () => seededDrivers.slice().sort((a, b) => b.wallet_balance - a.wallet_balance).slice(0, 10),
-    [],
-  );
-
-  const filteredTx = useMemo(
-    () =>
-      transactions
-        .filter((t) => status === "all" || t.status === status)
-        .filter(
-          (t) =>
-            !search ||
-            t.id.toLowerCase().includes(search.toLowerCase()) ||
-            t.order.toLowerCase().includes(search.toLowerCase()) ||
-            t.restaurant.toLowerCase().includes(search.toLowerCase()),
-        ),
-    [transactions, status, search],
-  );
-
   return (
     <PermissionGate
       required={["finance.view", "orders.view"]}
@@ -239,26 +294,17 @@ function PaymentsPage() {
           <Button variant="outline" size="sm">
             <Download className="mr-1.5 size-3.5" /> Export ledger
           </Button>
-          <Button size="sm">
-            <RefreshCw className="mr-1.5 size-3.5" /> Run payout batch
-          </Button>
         </div>
       }
     >
       {(staff) => (
         <div className="space-y-4">
-          {/* KPI strip */}
+          {/* KPI strip — revenue for the selected period */}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Kpi
-              icon={Receipt}
-              label="Gross revenue (delivered)"
-              value={money(revenueByDay.reduce((s, d) => s + d.revenue, 0))}
-              delta="+12.4%"
-              positive
-            />
-            <Kpi icon={TrendingUp} label="Platform commission" value={money(delivered.reduce((s, o) => s + o.commission, 0))} delta="+8.1%" positive tone="text-emerald-400" />
-            <Kpi icon={ArrowUpRight} label="Delivery fees" value={money(delivered.reduce((s, o) => s + o.delivery_fee, 0))} delta="+3.2%" positive />
-            <Kpi icon={TrendingDown} label="Refunds (cancelled)" value={money(refunded.reduce((s, o) => s + o.total, 0))} delta="−1.8%" tone="text-destructive" />
+            <Kpi icon={Receipt} label={`Revenue — ${PERIOD_LABEL[revenueGranularity]}`} value={money(revenue.totalRevenue)} />
+            <Kpi icon={TrendingUp} label="Orders completed" value={number0(revenue.totalOrders)} tone="text-emerald-400" />
+            <Kpi icon={ArrowUpRight} label="Avg order value" value={money(revenue.averageOrderValue)} />
+            <Kpi icon={Banknote} label="Delivery fees" value={money(revenue.deliveryFees)} />
           </div>
 
           <Tabs value={tab} onValueChange={setTab}>
@@ -279,15 +325,34 @@ function PaymentsPage() {
             </TabsList>
 
             <TabsContent value="overview" className="mt-4 space-y-4">
+              <Card>
+                <CardContent className="flex flex-wrap items-end justify-between gap-3 p-4">
+                  <div>
+                    <p className="text-sm font-medium">Revenue for {PERIOD_LABEL[revenueGranularity]}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {revenueRange.start.toLocaleDateString("en-ZA")} – {revenueRange.end.toLocaleDateString("en-ZA")}
+                    </p>
+                  </div>
+                  <PeriodControl
+                    granularity={revenueGranularity}
+                    onGranularityChange={setRevenueGranularity}
+                    customStart={revenueCustomStart}
+                    customEnd={revenueCustomEnd}
+                    onCustomStartChange={setRevenueCustomStart}
+                    onCustomEndChange={setRevenueCustomEnd}
+                  />
+                </CardContent>
+              </Card>
+
               <div className="grid gap-4 lg:grid-cols-3">
                 <Card className="lg:col-span-2">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Revenue trend (14 days)</CardTitle>
-                    <CardDescription>Daily gross revenue from delivered orders</CardDescription>
+                    <CardTitle className="text-base">Revenue trend</CardTitle>
+                    <CardDescription>Daily gross revenue from completed orders in this period</CardDescription>
                   </CardHeader>
                   <CardContent className="h-72 px-2">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={revenueByDay} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                      <AreaChart data={revenue.byDay} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                         <defs>
                           <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
                             <stop offset="0%" stopColor="var(--color-chart-1)" stopOpacity={0.4} />
@@ -295,7 +360,7 @@ function PaymentsPage() {
                           </linearGradient>
                         </defs>
                         <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
-                        <XAxis dataKey="day" stroke="var(--color-muted-foreground)" fontSize={11} tickLine={false} axisLine={false} />
+                        <XAxis dataKey="date" tickFormatter={(v: string) => v.slice(5)} stroke="var(--color-muted-foreground)" fontSize={11} tickLine={false} axisLine={false} />
                         <YAxis stroke="var(--color-muted-foreground)" fontSize={11} tickLine={false} axisLine={false} width={54} tickFormatter={(v) => `R${Math.round(v / 1000)}k`} />
                         <Tooltip contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }} formatter={(v: number) => money(v)} />
                         <Area type="monotone" dataKey="revenue" stroke="var(--color-chart-1)" strokeWidth={2} fill="url(#revFill)" />
@@ -307,73 +372,58 @@ function PaymentsPage() {
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base">Payment methods</CardTitle>
-                    <CardDescription>Share of delivered orders</CardDescription>
+                    <CardDescription>Share of completed orders</CardDescription>
                   </CardHeader>
                   <CardContent className="h-72">
-                    <ResponsiveContainer width="100%" height="80%">
-                      <PieChart>
-                        <Pie data={methodMix} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80} paddingAngle={2}>
-                          {methodMix.map((_, i) => (
-                            <Cell key={i} fill={PAYMENT_COLORS[i % PAYMENT_COLORS.length]} stroke="var(--color-card)" strokeWidth={2} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }} />
-                        <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    {methodMix.length === 0 ? (
+                      <p className="py-8 text-center text-xs text-muted-foreground">No completed orders yet.</p>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="80%">
+                        <PieChart>
+                          <Pie data={methodMix} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80} paddingAngle={2}>
+                            {methodMix.map((_, i) => (
+                              <Cell key={i} fill={PAYMENT_COLORS[i % PAYMENT_COLORS.length]} stroke="var(--color-card)" strokeWidth={2} />
+                            ))}
+                          </Pie>
+                          <Tooltip contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }} />
+                          <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    )}
                   </CardContent>
                 </Card>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Pending settlements (restaurants)</CardTitle>
-                    <CardDescription>Waiting to be paid out in the next batch</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {seededRestaurants.slice(0, 5).map((r, i) => {
-                      const owed = Math.round(delivered.filter((o) => o.restaurant_id === r.id).reduce((s, o) => s + (o.total - o.commission), 0));
-                      return (
-                        <div key={r.id} className="flex items-center justify-between border-b border-border/60 pb-2 last:border-0">
-                          <div className="flex items-center gap-2">
-                            <span className="flex size-8 items-center justify-center rounded-md bg-muted text-xs font-semibold">{r.name[0]}</span>
-                            <div>
-                              <p className="text-sm font-medium">{r.name}</p>
-                              <p className="text-[11px] text-muted-foreground">{r.cuisine}</p>
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-sm font-semibold">{money(owed)}</p>
-                            <Badge variant="outline" className="border-amber-500/30 bg-amber-500/15 text-amber-400 text-[9px] uppercase">{i === 0 ? "today" : "queued"}</Badge>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Driver wallet balances</CardTitle>
-                    <CardDescription>Available for instant cash-out or weekly payout</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {driverPayouts.slice(0, 5).map((d) => (
-                      <div key={d.id} className="flex items-center justify-between border-b border-border/60 pb-2 last:border-0">
-                        <div className="flex items-center gap-2">
-                          <Wallet className="size-4 text-muted-foreground" />
-                          <div>
-                            <p className="text-sm font-medium">{d.full_name}</p>
-                            <p className="text-[11px] text-muted-foreground">{d.vehicle_type} • {d.total_deliveries} deliveries</p>
-                          </div>
-                        </div>
-                        <p className="text-sm font-semibold">{money(d.wallet_balance)}</p>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              </div>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Revenue by restaurant</CardTitle>
+                  <CardDescription>How much each restaurant contributed in this period</CardDescription>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {revenue.byRestaurant.length === 0 ? (
+                    <p className="py-8 text-center text-xs text-muted-foreground">No completed orders in this period yet.</p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-4">Restaurant</TableHead>
+                          <TableHead className="text-right">Orders</TableHead>
+                          <TableHead className="pr-4 text-right">Revenue</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {revenue.byRestaurant.map((r) => (
+                          <TableRow key={r.restaurant_id || r.restaurant_name}>
+                            <TableCell className="pl-4 font-medium">{r.restaurant_name}</TableCell>
+                            <TableCell className="text-right tabular-nums">{number0(r.orders)}</TableCell>
+                            <TableCell className="pr-4 text-right font-semibold tabular-nums">{money2(r.revenue)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
             </TabsContent>
 
             <TabsContent value="proof" className="mt-4">
@@ -481,7 +531,7 @@ function PaymentsPage() {
                 <CardContent className="flex flex-wrap items-end gap-3 p-4">
                   <div className="relative min-w-[220px] flex-1">
                     <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-                    <Input placeholder="Search TX id, order #, restaurant…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
+                    <Input placeholder="Search order #, restaurant, customer…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
                   </div>
                   <Select value={status} onValueChange={setStatus}>
                     <SelectTrigger className="w-44">
@@ -489,10 +539,9 @@ function PaymentsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All statuses</SelectItem>
-                      <SelectItem value="settled">Settled</SelectItem>
-                      <SelectItem value="processing">Processing</SelectItem>
-                      <SelectItem value="pending">Pending</SelectItem>
-                      <SelectItem value="failed">Failed</SelectItem>
+                      <SelectItem value="delivered">Delivered</SelectItem>
+                      <SelectItem value="cancelled">Cancelled</SelectItem>
+                      <SelectItem value="refunded">Refunded</SelectItem>
                     </SelectContent>
                   </Select>
                 </CardContent>
@@ -502,32 +551,42 @@ function PaymentsPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="pl-4">Transaction</TableHead>
-                        <TableHead>Order</TableHead>
+                        <TableHead className="pl-4">Order</TableHead>
                         <TableHead>Restaurant</TableHead>
+                        <TableHead>Customer</TableHead>
                         <TableHead>Method</TableHead>
                         <TableHead className="text-right">Total</TableHead>
-                        <TableHead className="text-right">Commission</TableHead>
                         <TableHead className="text-right">Delivery</TableHead>
                         <TableHead className="text-right">Status</TableHead>
+                        <TableHead className="pr-4 text-right">Date</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredTx.slice(0, 20).map((t) => {
-                        const Icon = t.status === "settled" ? CheckCircle2 : t.status === "failed" ? XCircle : t.status === "processing" ? RefreshCw : Clock;
+                      {filteredTx.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={8} className="py-8 text-center text-xs text-muted-foreground">
+                            No transactions match this filter.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {filteredTx.slice(0, 40).map((o) => {
+                        const Icon = o.status === "delivered" ? CheckCircle2 : o.status === "refunded" ? RefreshCw : XCircle;
+                        const date = o.delivered_at ?? o.cancelled_at ?? o.placed_at;
                         return (
-                          <TableRow key={t.id}>
-                            <TableCell className="pl-4 font-mono text-xs">{t.id}</TableCell>
-                            <TableCell className="font-medium">{t.order}</TableCell>
-                            <TableCell className="text-muted-foreground">{t.restaurant}</TableCell>
-                            <TableCell className="uppercase text-xs text-muted-foreground">{t.method}</TableCell>
-                            <TableCell className="text-right tabular-nums">{money2(t.total)}</TableCell>
-                            <TableCell className="text-right tabular-nums text-emerald-400">{money2(t.commission)}</TableCell>
-                            <TableCell className="text-right tabular-nums text-muted-foreground">{money2(t.delivery)}</TableCell>
+                          <TableRow key={o.id}>
+                            <TableCell className="pl-4 font-medium">{o.order_number}</TableCell>
+                            <TableCell className="text-muted-foreground">{o.restaurant_name}</TableCell>
+                            <TableCell className="text-muted-foreground">{o.customer_name}</TableCell>
+                            <TableCell className="uppercase text-xs text-muted-foreground">{o.payment_method}</TableCell>
+                            <TableCell className="text-right tabular-nums">{money2(o.total)}</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">{money2(o.delivery_fee)}</TableCell>
                             <TableCell className="text-right">
-                              <Badge variant="outline" className={statusTone[t.status] + " gap-1"}>
-                                <Icon className="size-3" /> {t.status}
+                              <Badge variant="outline" className={TX_STATUS_TONE[o.status] + " gap-1"}>
+                                <Icon className="size-3" /> {o.status}
                               </Badge>
+                            </TableCell>
+                            <TableCell className="pr-4 text-right text-xs text-muted-foreground">
+                              {new Date(date).toLocaleDateString("en-ZA")}
                             </TableCell>
                           </TableRow>
                         );
@@ -538,66 +597,159 @@ function PaymentsPage() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="settlements" className="mt-4">
+            <TabsContent value="settlements" className="mt-4 space-y-4">
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Weekly settlement batches</CardTitle>
-                  <CardDescription>Automated every Monday at 02:00 SAST. Restaurants can be paid manually at any time.</CardDescription>
+                <CardHeader className="flex flex-col gap-3 pb-2 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <CardTitle className="text-base">Restaurant settlements</CardTitle>
+                    <CardDescription>
+                      Revenue owed to each restaurant after the platform's commission, for{" "}
+                      {PERIOD_LABEL[revenueGranularity].toLowerCase()}.
+                    </CardDescription>
+                  </div>
+                  <PeriodControl
+                    granularity={revenueGranularity}
+                    onGranularityChange={setRevenueGranularity}
+                    customStart={revenueCustomStart}
+                    customEnd={revenueCustomEnd}
+                    onCustomStartChange={setRevenueCustomStart}
+                    onCustomEndChange={setRevenueCustomEnd}
+                  />
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  {[
-                    { id: "STL-2026-W31", date: "4 Aug 2026", restaurants: 8, amount: 184204.5, status: "settled" },
-                    { id: "STL-2026-W30", date: "28 Jul 2026", restaurants: 8, amount: 172510.2, status: "settled" },
-                    { id: "STL-2026-W32", date: "11 Aug 2026", restaurants: 8, amount: 64320.0, status: "pending" },
-                  ].map((b) => (
-                    <div key={b.id} className="flex items-center justify-between rounded-lg border border-border/70 p-3">
-                      <div>
-                        <p className="font-medium">{b.id}</p>
-                        <p className="text-[11px] text-muted-foreground">{b.date} • {b.restaurants} restaurants</p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <p className="font-semibold">{money(b.amount)}</p>
-                        <Badge variant="outline" className={statusTone[b.status]}>{b.status}</Badge>
-                      </div>
-                    </div>
-                  ))}
+                <CardContent className="p-0">
+                  {settlements.length === 0 ? (
+                    <p className="py-8 text-center text-xs text-muted-foreground">No completed orders in this period yet.</p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-4">Restaurant</TableHead>
+                          <TableHead className="text-right">Orders</TableHead>
+                          <TableHead className="text-right">Revenue</TableHead>
+                          <TableHead className="text-right">Rate</TableHead>
+                          <TableHead className="text-right">Commission</TableHead>
+                          <TableHead className="pr-4 text-right">Amount owed</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {settlements.map((row) => (
+                          <TableRow key={row.restaurant_id || row.restaurant_name}>
+                            <TableCell className="pl-4 font-medium">{row.restaurant_name}</TableCell>
+                            <TableCell className="text-right tabular-nums">{number0(row.orders)}</TableCell>
+                            <TableCell className="text-right tabular-nums">{money2(row.revenue)}</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">{row.commission_rate}%</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">{money2(row.commission)}</TableCell>
+                            <TableCell className="pr-4 text-right font-semibold tabular-nums">{money2(row.amount_owed)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>
 
-            <TabsContent value="payouts" className="mt-4">
+            <TabsContent value="payouts" className="mt-4 space-y-4">
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Driver payouts</CardTitle>
-                  <CardDescription>Wallet balances paid weekly or cashed out instantly.</CardDescription>
+                <CardHeader className="flex flex-col gap-3 pb-2 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <CardTitle className="text-base">Driver payouts</CardTitle>
+                    <CardDescription>
+                      Each driver keeps the delivery fee from every completed delivery, minus a{" "}
+                      {money(DRIVER_COMMISSION_PER_DELIVERY)} platform commission per delivery.
+                    </CardDescription>
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <PeriodControl
+                      granularity={payoutGranularity}
+                      onGranularityChange={setPayoutGranularity}
+                      customStart={payoutCustomStart}
+                      customEnd={payoutCustomEnd}
+                      onCustomStartChange={setPayoutCustomStart}
+                      onCustomEndChange={setPayoutCustomEnd}
+                    />
+                    {staff.hasPermission("finance.manage") && (
+                      <Button
+                        size="sm"
+                        disabled={pendingPayouts.length === 0 || payAllMutation.isPending}
+                        onClick={() =>
+                          payAllMutation.mutate({ rows: pendingPayouts, actor: staff.session?.email ?? null })
+                        }
+                      >
+                        {payAllMutation.isPending ? (
+                          <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="mr-1.5 size-3.5" />
+                        )}
+                        Pay all pending ({pendingPayouts.length})
+                      </Button>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="pl-4">Driver</TableHead>
-                        <TableHead>Vehicle</TableHead>
-                        <TableHead className="text-right">Deliveries</TableHead>
-                        <TableHead className="text-right">Rating</TableHead>
-                        <TableHead className="text-right">Available</TableHead>
-                        <TableHead className="pr-4 text-right">Action</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {driverPayouts.map((d) => (
-                        <TableRow key={d.id}>
-                          <TableCell className="pl-4 font-medium">{d.full_name}</TableCell>
-                          <TableCell className="text-muted-foreground capitalize">{d.vehicle_type}{d.vehicle_plate ? ` • ${d.vehicle_plate}` : ""}</TableCell>
-                          <TableCell className="text-right tabular-nums">{number0(d.total_deliveries)}</TableCell>
-                          <TableCell className="text-right tabular-nums">★ {d.rating.toFixed(1)}</TableCell>
-                          <TableCell className="text-right font-semibold tabular-nums">{money2(d.wallet_balance)}</TableCell>
-                          <TableCell className="pr-4 text-right">
-                            <Button size="sm" variant="outline">Pay out</Button>
-                          </TableCell>
+                  {payoutsQuery.isLoading && (
+                    <p className="py-8 text-center text-xs text-muted-foreground">Loading…</p>
+                  )}
+                  {!payoutsQuery.isLoading && payouts.length === 0 && (
+                    <p className="py-8 text-center text-xs text-muted-foreground">
+                      No completed deliveries in this period yet.
+                    </p>
+                  )}
+                  {payouts.length > 0 && (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-4">Driver</TableHead>
+                          <TableHead className="text-right">Deliveries</TableHead>
+                          <TableHead className="text-right">Delivery fees</TableHead>
+                          <TableHead className="text-right">Platform commission</TableHead>
+                          <TableHead className="text-right">Amount due</TableHead>
+                          <TableHead className="text-right">Status</TableHead>
+                          <TableHead className="pr-4 text-right">Action</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {payouts.map((row) => {
+                          const isPaying =
+                            markPaidMutation.isPending &&
+                            markPaidMutation.variables?.row.driver_id === row.driver_id;
+                          return (
+                            <TableRow key={row.driver_id}>
+                              <TableCell className="pl-4 font-medium">{row.driver_name}</TableCell>
+                              <TableCell className="text-right tabular-nums">{number0(row.deliveries)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{money2(row.gross_delivery_fees)}</TableCell>
+                              <TableCell className="text-right tabular-nums text-muted-foreground">{money2(row.commission)}</TableCell>
+                              <TableCell className="text-right font-semibold tabular-nums">{money2(row.amount_due)}</TableCell>
+                              <TableCell className="text-right">
+                                <Badge variant="outline" className={row.status === "paid" ? statusTone["settled"] : statusTone["pending"]}>
+                                  {row.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="pr-4 text-right">
+                                {row.status === "pending" && staff.hasPermission("finance.manage") ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={isPaying || payAllMutation.isPending}
+                                    onClick={() =>
+                                      markPaidMutation.mutate({ row, actor: staff.session?.email ?? null })
+                                    }
+                                  >
+                                    {isPaying && <Loader2 className="mr-1 size-3.5 animate-spin" />}
+                                    Mark paid
+                                  </Button>
+                                ) : row.status === "paid" ? (
+                                  <span className="text-[11px] text-muted-foreground">
+                                    Paid {row.paid_at ? new Date(row.paid_at).toLocaleDateString("en-ZA") : ""}
+                                  </span>
+                                ) : null}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>
@@ -606,14 +758,16 @@ function PaymentsPage() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Refunds & credits</CardTitle>
-                  <CardDescription>Partial and full refunds across orders, with approval trail.</CardDescription>
+                  <CardDescription>Cancelled and refunded orders, most recent first.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {refunded.slice(0, 6).map((o) => (
+                  {refundedOrders.slice(0, 20).map((o) => (
                     <div key={o.id} className="flex items-center justify-between rounded-lg border border-destructive/20 bg-destructive/5 p-3">
                       <div>
                         <p className="text-sm font-medium">{o.order_number}</p>
-                        <p className="text-[11px] text-muted-foreground">{new Date(o.placed_at).toLocaleDateString()} • {o.payment_method}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {o.restaurant_name} · {new Date(o.placed_at).toLocaleDateString("en-ZA")} · {o.payment_method}
+                        </p>
                       </div>
                       <div className="text-right">
                         <p className="font-semibold text-destructive">-{money2(o.total)}</p>
@@ -621,7 +775,7 @@ function PaymentsPage() {
                       </div>
                     </div>
                   ))}
-                  {refunded.length === 0 && <p className="py-8 text-center text-xs text-muted-foreground">No refunds issued this period.</p>}
+                  {refundedOrders.length === 0 && <p className="py-8 text-center text-xs text-muted-foreground">No refunds issued.</p>}
                 </CardContent>
               </Card>
             </TabsContent>
@@ -720,7 +874,6 @@ function Kpi({
             {value}
             {delta && (
               <span className={`text-[10px] ${positive ? "text-emerald-400" : "text-destructive"}`}>
-                {positive ? <ArrowUpRight className="mr-0.5 inline size-3" /> : <ArrowDownLeft className="mr-0.5 inline size-3" />}
                 {delta}
               </span>
             )}
@@ -728,5 +881,52 @@ function Kpi({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function PeriodControl({
+  granularity,
+  onGranularityChange,
+  customStart,
+  customEnd,
+  onCustomStartChange,
+  onCustomEndChange,
+}: {
+  granularity: PeriodGranularity;
+  onGranularityChange: (g: PeriodGranularity) => void;
+  customStart: string;
+  customEnd: string;
+  onCustomStartChange: (v: string) => void;
+  onCustomEndChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-end gap-2">
+      <div className="space-y-1">
+        <Label className="text-[11px] text-muted-foreground">Period</Label>
+        <Select value={granularity} onValueChange={(v) => onGranularityChange(v as PeriodGranularity)}>
+          <SelectTrigger className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="day">Today</SelectItem>
+            <SelectItem value="week">This week</SelectItem>
+            <SelectItem value="month">This month</SelectItem>
+            <SelectItem value="custom">Custom range</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {granularity === "custom" && (
+        <>
+          <div className="space-y-1">
+            <Label className="text-[11px] text-muted-foreground">From</Label>
+            <Input type="date" value={customStart} onChange={(e) => onCustomStartChange(e.target.value)} className="w-36" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[11px] text-muted-foreground">To</Label>
+            <Input type="date" value={customEnd} onChange={(e) => onCustomEndChange(e.target.value)} className="w-36" />
+          </div>
+        </>
+      )}
+    </div>
   );
 }
