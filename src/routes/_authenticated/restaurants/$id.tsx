@@ -12,7 +12,10 @@ import {
   Crosshair,
   ExternalLink,
   Gauge,
+  Globe2,
   Image as ImageIcon,
+  Loader2,
+  MapPin,
   Navigation,
   Plus,
   Trash2,
@@ -173,6 +176,9 @@ function RestaurantDetailPage() {
   const [hours, setHours] = useState<HourRow[]>([]);
   const [activeTab, setActiveTab] = useState<string>("profile");
   const [coverDraft, setCoverDraft] = useState<string>("");
+  const [latDraft, setLatDraft] = useState<string>("");
+  const [lngDraft, setLngDraft] = useState<string>("");
+  const [locating, setLocating] = useState(false);
   useEffect(() => {
     if (!query.data) return;
     const existing = query.data.hours;
@@ -194,6 +200,9 @@ function RestaurantDetailPage() {
         ? ((query.data.restaurant as FirebaseRestaurant).image_url ?? "")
         : "";
     setCoverDraft(coverUrl);
+    const r = query.data.restaurant as FirebaseRestaurant;
+    setLatDraft(r.latitude != null ? String(r.latitude) : "");
+    setLngDraft(r.longitude != null ? String(r.longitude) : "");
   }, [query.data]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["restaurant", id] });
@@ -261,6 +270,60 @@ function RestaurantDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ["restaurants-fb"] });
     } catch (e) {
       toast.error((e as Error).message || "Failed to save cover image");
+    }
+  }
+
+  function detectRestaurantLocation() {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      toast.error("Geolocation is not supported in this browser.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLatDraft(pos.coords.latitude.toFixed(6));
+        setLngDraft(pos.coords.longitude.toFixed(6));
+        setLocating(false);
+      },
+      () => {
+        setLocating(false);
+        toast.error("Could not get your location. Enter coordinates manually.");
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+    );
+  }
+
+  async function saveLocation() {
+    if (!query.data) return;
+    const r = query.data.restaurant as FirebaseRestaurant;
+    const latTrim = latDraft.trim();
+    const lngTrim = lngDraft.trim();
+    const lat = latTrim ? Number(latTrim) : null;
+    const lng = lngTrim ? Number(lngTrim) : null;
+    if (latTrim && (!Number.isFinite(lat) || lat! < -90 || lat! > 90)) {
+      toast.error("Latitude must be a number between -90 and 90.");
+      return;
+    }
+    if (lngTrim && (!Number.isFinite(lng) || lng! < -180 || lng! > 180)) {
+      toast.error("Longitude must be a number between -180 and 180.");
+      return;
+    }
+    if ((lat == null) !== (lng == null)) {
+      toast.error("Set both latitude and longitude, or clear both.");
+      return;
+    }
+    try {
+      if (!isFirebaseAvailable()) {
+        toast.error("Firebase is unavailable — location not saved.");
+        return;
+      }
+      await fsSet(`restaurants/${r.id}/latitude`, lat);
+      await fsSet(`restaurants/${r.id}/longitude`, lng);
+      toast.success("Restaurant location saved");
+      await queryClient.invalidateQueries({ queryKey: ["restaurant", id] });
+      await queryClient.invalidateQueries({ queryKey: ["restaurants-fb"] });
+    } catch (e) {
+      toast.error((e as Error).message || "Failed to save location");
     }
   }
 
@@ -629,6 +692,105 @@ function RestaurantDetailPage() {
                         <Button type="button" onClick={() => void saveCoverImage()}>
                           Save cover image
                         </Button>
+                      )}
+                    </div>
+
+                    <Separator className="my-4" />
+
+                    <div className="space-y-3">
+                      <div>
+                        <h4 className="mb-1 flex items-center gap-1.5 text-sm font-medium">
+                          <MapPin className="size-3.5" /> Location
+                        </h4>
+                        <p className="mb-3 text-xs text-muted-foreground">
+                          Pinpoint this restaurant on the map — used for delivery-fee distance
+                          calculations and the driver app&apos;s route to this kitchen.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 sm:max-w-md">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="loc-lat" className="text-xs font-normal text-muted-foreground">
+                            Latitude
+                          </Label>
+                          <Input
+                            id="loc-lat"
+                            inputMode="decimal"
+                            placeholder="-26.166200"
+                            value={latDraft}
+                            disabled={!canManage}
+                            onChange={(e) => setLatDraft(e.target.value)}
+                            className="font-mono text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="loc-lng" className="text-xs font-normal text-muted-foreground">
+                            Longitude
+                          </Label>
+                          <Input
+                            id="loc-lng"
+                            inputMode="decimal"
+                            placeholder="28.027300"
+                            value={lngDraft}
+                            disabled={!canManage}
+                            onChange={(e) => setLngDraft(e.target.value)}
+                            className="font-mono text-sm"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        South Africa is in the southern hemisphere — latitude will be negative (e.g.
+                        -26.1076 for Johannesburg).
+                      </p>
+                      {canManage && (
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          {locating ? (
+                            <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                              <Loader2 className="size-3.5 animate-spin" /> Fetching position…
+                            </span>
+                          ) : (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              className="h-7 text-xs"
+                              onClick={detectRestaurantLocation}
+                            >
+                              <Crosshair className="mr-1 size-3" /> Detect my location
+                            </Button>
+                          )}
+                          {latDraft && lngDraft && (
+                            <a
+                              href={`https://www.google.com/maps?q=${Number(latDraft).toFixed(6)},${Number(lngDraft).toFixed(6)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                            >
+                              <Globe2 className="size-3" /> Open in Maps
+                            </a>
+                          )}
+                          {(latDraft || lngDraft) && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs text-muted-foreground"
+                              onClick={() => {
+                                setLatDraft("");
+                                setLngDraft("");
+                              }}
+                            >
+                              Clear
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => void saveLocation()}
+                            className="ml-auto"
+                          >
+                            <CheckCircle2 className="mr-1.5 size-3.5" /> Save location
+                          </Button>
+                        </div>
                       )}
                     </div>
 
