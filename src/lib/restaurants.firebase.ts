@@ -44,6 +44,10 @@ export interface FirebaseRestaurant {
   longitude: number | null;
   image_url: string | null;
   created_at: string;
+  /** Per-restaurant Cloudinary account — camelCase to match Restaurant Admin's production field
+   *  names. Falls back to the platform-wide Settings → Media config when unset. */
+  cloudinaryCloudName?: string | null;
+  cloudinaryUploadPreset?: string | null;
   // Index signature so the record satisfies FirestoreValue
   [key: string]: string | number | boolean | null | undefined | DeliveryTier[];
 }

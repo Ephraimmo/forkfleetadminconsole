@@ -12,6 +12,7 @@ import {
   Crosshair,
   ExternalLink,
   Gauge,
+  Image as ImageIcon,
   Navigation,
   Plus,
   Trash2,
@@ -48,6 +49,7 @@ import {
   type HourRow,
 } from "@/lib/restaurants.functions";
 import { fsGet, isFirebaseAvailable, fsSet } from "@/lib/firestore";
+import { useRestaurantCloudinaryConfig } from "@/hooks/use-restaurant-cloudinary-config";
 import { RestaurantRewardsEditor } from "@/components/loyalty/restaurant-rewards-editor";
 import { PaymentMethodsEditor } from "@/components/restaurants/payment-methods-editor";
 import {
@@ -276,6 +278,7 @@ function RestaurantDetailPage() {
   const [calcLocating, setCalcLocating] = useState(false);
 
   const restaurant = query.data?.restaurant as FirebaseRestaurant | undefined;
+  const { overrides: coverCloudinaryOverrides } = useRestaurantCloudinaryConfig(restaurant);
   const restaurantHasCoords = Boolean(
     restaurant && restaurant.latitude != null && restaurant.longitude != null,
   );
@@ -486,6 +489,9 @@ function RestaurantDetailPage() {
                 <TabsTrigger value="payments" className="gap-1.5">
                   <CreditCard className="size-3.5" /> Payments
                 </TabsTrigger>
+                <TabsTrigger value="media" className="gap-1.5">
+                  <ImageIcon className="size-3.5" /> Media
+                </TabsTrigger>
                 <TabsTrigger value="team">Team</TabsTrigger>
               </TabsList>
 
@@ -617,6 +623,7 @@ function RestaurantDetailPage() {
                         value={coverDraft}
                         disabled={!canManage}
                         onChange={setCoverDraft}
+                        overrides={coverCloudinaryOverrides}
                       />
                       {canManage && (
                         <Button type="button" onClick={() => void saveCoverImage()}>
@@ -1235,6 +1242,25 @@ function RestaurantDetailPage() {
                 />
               </TabsContent>
 
+              <TabsContent value="media">
+                <RestaurantMediaTab
+                  restaurantId={restaurant.id}
+                  restaurantName={restaurant.name}
+                  cloudinaryCloudName={
+                    "cloudinaryCloudName" in restaurant
+                      ? ((restaurant as FirebaseRestaurant).cloudinaryCloudName ?? null)
+                      : null
+                  }
+                  cloudinaryUploadPreset={
+                    "cloudinaryUploadPreset" in restaurant
+                      ? ((restaurant as FirebaseRestaurant).cloudinaryUploadPreset ?? null)
+                      : null
+                  }
+                  canManage={canManage}
+                  onSaved={invalidate}
+                />
+              </TabsContent>
+
               <TabsContent value="team">
                 <Card>
                   <CardHeader>
@@ -1352,6 +1378,125 @@ function RestaurantPaymentsTab({
       config={config}
       canManage={canManage}
     />
+  );
+}
+
+/**
+ * Media (Cloudinary) tab — lets this one restaurant configure its own
+ * Cloudinary account, ahead of the platform-wide default in Settings → Media.
+ * Fields live flat on `restaurants/{id}` (cloudinaryCloudName/cloudinaryUploadPreset),
+ * siblings of payment_config — see docs/RESTAURANT_ADMIN_TO_SUPER_ADMIN_MEDIA_HANDOVER.md.
+ */
+function RestaurantMediaTab({
+  restaurantId,
+  restaurantName,
+  cloudinaryCloudName,
+  cloudinaryUploadPreset,
+  canManage,
+  onSaved,
+}: {
+  restaurantId: string;
+  restaurantName: string;
+  cloudinaryCloudName: string | null;
+  cloudinaryUploadPreset: string | null;
+  canManage: boolean;
+  onSaved: () => void;
+}) {
+  const [cloudName, setCloudName] = useState(cloudinaryCloudName ?? "");
+  const [uploadPreset, setUploadPreset] = useState(cloudinaryUploadPreset ?? "");
+  const [saving, setSaving] = useState(false);
+  const { overrides: platformOverrides, usingOwnAccount } = useRestaurantCloudinaryConfig({
+    cloudinaryCloudName,
+    cloudinaryUploadPreset,
+  });
+
+  useEffect(() => {
+    setCloudName(cloudinaryCloudName ?? "");
+    setUploadPreset(cloudinaryUploadPreset ?? "");
+  }, [restaurantId, cloudinaryCloudName, cloudinaryUploadPreset]);
+
+  async function save() {
+    if (!isFirebaseAvailable()) {
+      toast.error("Firebase is unavailable — Media settings not saved.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await fsSet(`restaurants/${restaurantId}/cloudinaryCloudName`, cloudName.trim() || null);
+      await fsSet(
+        `restaurants/${restaurantId}/cloudinaryUploadPreset`,
+        uploadPreset.trim() || null,
+      );
+      toast.success("Media settings saved");
+      onSaved();
+    } catch (e) {
+      toast.error((e as Error).message || "Failed to save Media settings");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ImageIcon className="size-4" /> Media (Cloudinary)
+        </CardTitle>
+        <CardDescription>
+          Give {restaurantName} its own Cloudinary account for product photos, category images,
+          cover image and logo. Images upload via an unsigned upload preset — the API secret is not
+          stored here and is never used in the browser.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="media-cloud-name">Cloud name</Label>
+            <Input
+              id="media-cloud-name"
+              placeholder="e.g. dnmcti0xs"
+              value={cloudName}
+              disabled={!canManage}
+              onChange={(e) => setCloudName(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="media-upload-preset">Upload preset (unsigned)</Label>
+            <Input
+              id="media-upload-preset"
+              placeholder="e.g. ml_default or my_app_uploads"
+              value={uploadPreset}
+              disabled={!canManage}
+              onChange={(e) => setUploadPreset(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+          {usingOwnAccount ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-1.5 rounded-full bg-emerald-500" /> Using this restaurant&apos;s
+              own Cloudinary account.
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-1.5 rounded-full bg-muted-foreground" /> No account set for this
+              restaurant — falling back to the platform default (
+              {platformOverrides.cloudName ? platformOverrides.cloudName : "not configured"}), set
+              under Settings → Media.
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          If left empty, {restaurantName}&apos;s images upload via the platform-wide Cloudinary
+          account instead — nothing breaks if you never set this.
+        </p>
+        {canManage && (
+          <Button type="button" onClick={() => void save()} disabled={saving}>
+            {saving ? "Saving…" : "Save Media settings"}
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

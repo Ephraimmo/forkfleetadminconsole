@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@/lib/use-demo-fn";
-import { listOrders } from "@/lib/dispatch.functions";
+import { toast } from "sonner";
+import { onOrdersChanged } from "@/lib/dispatch.functions";
 import type { DispatchOrder } from "@/lib/dispatch.functions";
+import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
 import {
   Users,
   Mail,
@@ -16,6 +16,7 @@ import {
   Download,
   Filter,
   UserPlus,
+  Power,
 } from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
@@ -46,7 +47,14 @@ import {
   YAxis,
 } from "recharts";
 
-import { customers as seededCustomers, type DemoCustomer } from "@/lib/demo-store";
+import {
+  subscribeFirebaseCustomers,
+  customerDisplayName,
+  customerAddressLabel,
+  customerIsActive,
+  toggleCustomerActive,
+  type FirebaseCustomer,
+} from "@/lib/customers.firebase";
 import { money, number0 } from "@/lib/demo-formatters";
 
 export const Route = createFileRoute("/_authenticated/customers")({
@@ -69,10 +77,12 @@ function initials(name: string) {
     .join("");
 }
 
-type OrderLike = { customer_id: string | null; customer_name: string; customer_email?: string | null; customer_phone?: string | null; status: string; total: number; placed_at: string; order_number: string };
+type OrderLike = { customer_id: string | null; customer_name: string; customer_email?: string | null; customer_phone?: string | null; status: string; total: number; placed_at: string; order_number: string; restaurant_id: string };
 
-function computeCustomerMetrics(customer: DemoCustomer, orders: OrderLike[]) {
-  const myOrders = orders.filter((o) => o.customer_id === customer.id || o.customer_email === customer.email);
+function computeCustomerMetrics(customer: FirebaseCustomer, orders: OrderLike[]) {
+  const myOrders = orders.filter(
+    (o) => o.customer_id === customer.id || (customer.email && o.customer_email === customer.email),
+  );
   const delivered = myOrders.filter((o) => o.status === "delivered");
   const total = delivered.reduce((s, o) => s + o.total, 0);
   const aov = delivered.length ? total / delivered.length : 0;
@@ -98,80 +108,135 @@ const segmentTone: Record<string, string> = {
 
 function CustomersPage() {
   const [search, setSearch] = useState("");
-  const [city, setCity] = useState("all");
+  const [restaurantFilter, setRestaurantFilter] = useState("all");
   const [segment, setSegment] = useState("all");
   const [tab, setTab] = useState("directory");
 
-  const fetchOrders = useServerFn(listOrders);
-  const ordersQuery = useQuery<DispatchOrder[]>({
-    queryKey: ["orders", "customers-page"],
-    queryFn: () => fetchOrders({}),
-    initialData: [],
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-  });
-  const allOrders = ordersQuery.data ?? [];
+  // Live data — both listeners update this screen immediately as orders come
+  // in or customer records change, no manual refresh, no polling interval.
+  // See docs/RESTAURANT_ADMIN_TO_SUPER_ADMIN_CUSTOMERS_HANDOVER.md §1.1.
+  const [customers, setCustomers] = useState<FirebaseCustomer[]>([]);
+  const [allOrders, setAllOrders] = useState<DispatchOrder[]>([]);
+  useEffect(() => subscribeFirebaseCustomers(setCustomers), []);
+  useEffect(() => onOrdersChanged(setAllOrders), []);
+
+  const { rows: restaurants } = useFirebaseRestaurants();
+
+  // Customers have no restaurant_id of their own — "this restaurant's
+  // customers" is derived by filtering orders by restaurant_id first, the
+  // same way Restaurant Admin does it (handover doc §1.2). "All restaurants"
+  // uses every order, unfiltered.
+  const scopedOrders = useMemo(
+    () =>
+      restaurantFilter === "all"
+        ? allOrders
+        : allOrders.filter((o) => o.restaurant_id === restaurantFilter),
+    [allOrders, restaurantFilter],
+  );
+  const scopedCustomerIds = useMemo(
+    () =>
+      restaurantFilter === "all"
+        ? null
+        : new Set(scopedOrders.map((o) => o.customer_id).filter((id): id is string => Boolean(id))),
+    [restaurantFilter, scopedOrders],
+  );
+  const scopedEmails = useMemo(
+    () =>
+      restaurantFilter === "all"
+        ? null
+        : new Set(
+            scopedOrders.map((o) => o.customer_email).filter((e): e is string => Boolean(e)),
+          ),
+    [restaurantFilter, scopedOrders],
+  );
+
+  const visibleCustomers = useMemo(() => {
+    if (!scopedCustomerIds && !scopedEmails) return customers;
+    return customers.filter(
+      (c) => scopedCustomerIds?.has(c.id) || (c.email && scopedEmails?.has(c.email)),
+    );
+  }, [customers, scopedCustomerIds, scopedEmails]);
 
   const rows = useMemo(() => {
-    const base = seededCustomers.map((c) => ({ customer: c, metrics: computeCustomerMetrics(c, allOrders) }));
+    const base = visibleCustomers.map((c) => ({
+      customer: c,
+      metrics: computeCustomerMetrics(c, scopedOrders),
+    }));
     return base
-      .filter((r) => !search ||
-        r.customer.full_name.toLowerCase().includes(search.toLowerCase()) ||
-        r.customer.email.toLowerCase().includes(search.toLowerCase()) ||
-        (r.customer.phone ?? "").includes(search),
-      )
-      .filter((r) => city === "all" || r.customer.city === city)
+      .filter((r) => {
+        const name = customerDisplayName(r.customer).toLowerCase();
+        const email = (r.customer.email ?? "").toLowerCase();
+        const phone = r.customer.phone ?? "";
+        return (
+          !search ||
+          name.includes(search.toLowerCase()) ||
+          email.includes(search.toLowerCase()) ||
+          phone.includes(search)
+        );
+      })
       .filter((r) => segment === "all" || r.metrics.segment === segment)
       .sort((a, b) => b.metrics.total - a.metrics.total);
-  }, [search, city, segment, allOrders]);
+  }, [visibleCustomers, scopedOrders, search, segment]);
 
-  const cities = useMemo(() => Array.from(new Set(seededCustomers.map((c) => c.city))).sort(), []);
   const kpis = useMemo(() => {
-    const totals = seededCustomers.map((c) => computeCustomerMetrics(c, allOrders));
+    const totals = visibleCustomers.map((c) => computeCustomerMetrics(c, scopedOrders));
     return {
-      total: seededCustomers.length,
+      total: visibleCustomers.length,
       new30: totals.filter((t) => t.delivered <= 3).length,
       vip: totals.filter((t) => t.segment === "VIP").length,
       revenue: totals.reduce((s, t) => s + t.total, 0),
       aov: totals.length ? totals.reduce((s, t) => s + t.aov, 0) / totals.length : 0,
       atRisk: totals.filter((t) => t.segment === "At Risk").length,
     };
-  }, [allOrders]);
+  }, [visibleCustomers, scopedOrders]);
 
   const segmentBreakdown = useMemo(() => {
     const counts: Record<string, number> = { VIP: 0, Regular: 0, New: 0, "At Risk": 0 };
-    seededCustomers.forEach((c) => {
-      const m = computeCustomerMetrics(c, allOrders);
+    visibleCustomers.forEach((c) => {
+      const m = computeCustomerMetrics(c, scopedOrders);
       counts[m.segment] = (counts[m.segment] ?? 0) + 1;
     });
     return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [allOrders]);
+  }, [visibleCustomers, scopedOrders]);
 
   const topSpenders = useMemo(
     () =>
-      seededCustomers
+      visibleCustomers
         .map((c) => {
-          const m = computeCustomerMetrics(c, allOrders);
-          return { name: c.full_name, value: Math.round(m.total) };
+          const m = computeCustomerMetrics(c, scopedOrders);
+          return { name: customerDisplayName(c), value: Math.round(m.total) };
         })
         .sort((a, b) => b.value - a.value)
         .slice(0, 6),
-    [allOrders],
+    [visibleCustomers, scopedOrders],
   );
 
   // Also pick up guest (no customer_id) orders for the activity feed.
   const recentOrders = useMemo(
-    () => [...allOrders].sort((a, b) => b.placed_at.localeCompare(a.placed_at)).slice(0, 12),
-    [allOrders],
+    () => [...scopedOrders].sort((a, b) => b.placed_at.localeCompare(a.placed_at)).slice(0, 12),
+    [scopedOrders],
   );
 
+  async function handleToggleActive(customer: FirebaseCustomer) {
+    try {
+      await toggleCustomerActive(customer);
+      toast.success(
+        customerIsActive(customer)
+          ? `${customerDisplayName(customer)} deactivated`
+          : `${customerDisplayName(customer)} reactivated`,
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to update customer status");
+    }
+  }
+
   function exportCsv() {
-    const cols = ["Name", "Email", "Phone", "City", "Segment", "Orders", "Delivered", "LTV", "AOV", "Last order (days)"];
+    const cols = ["Name", "Email", "Phone", "Status", "Segment", "Orders", "Delivered", "LTV", "AOV", "Last order (days)"];
     const lines = rows.map((r) => [
-      r.customer.full_name,
-      r.customer.email,
+      customerDisplayName(r.customer),
+      r.customer.email ?? "",
       r.customer.phone ?? "",
-      r.customer.city,
+      customerIsActive(r.customer) ? "Active" : "Inactive",
       r.metrics.segment,
       r.metrics.orders,
       r.metrics.delivered,
@@ -291,13 +356,15 @@ function CustomersPage() {
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
                   <Input placeholder="Search name, email, phone…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
                 </div>
-                <Select value={city} onValueChange={setCity}>
-                  <SelectTrigger className="w-44">
-                    <SelectValue placeholder="All cities" />
+                <Select value={restaurantFilter} onValueChange={setRestaurantFilter}>
+                  <SelectTrigger className="w-52">
+                    <SelectValue placeholder="All restaurants" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All cities</SelectItem>
-                    {cities.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                    <SelectItem value="all">All restaurants</SelectItem>
+                    {restaurants.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <Select value={segment} onValueChange={setSegment}>
@@ -321,7 +388,7 @@ function CustomersPage() {
                       <TableRow>
                         <TableHead>Customer</TableHead>
                         <TableHead>Contact</TableHead>
-                        <TableHead>City</TableHead>
+                        <TableHead>Status</TableHead>
                         <TableHead>Segment</TableHead>
                         <TableHead className="text-right">Orders</TableHead>
                         <TableHead className="text-right">LTV</TableHead>
@@ -335,22 +402,39 @@ function CustomersPage() {
                           <TableCell>
                             <div className="flex items-center gap-2.5">
                               <Avatar className="size-8">
-                                <AvatarFallback className="bg-primary/15 text-primary text-xs">{initials(r.customer.full_name)}</AvatarFallback>
+                                <AvatarFallback className="bg-primary/15 text-primary text-xs">{initials(customerDisplayName(r.customer))}</AvatarFallback>
                               </Avatar>
                               <div>
-                                <p className="text-sm font-medium leading-tight">{r.customer.full_name}</p>
-                                <p className="text-[11px] text-muted-foreground">{r.customer.email}</p>
+                                <p className="text-sm font-medium leading-tight">{customerDisplayName(r.customer)}</p>
+                                <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <MapPin className="size-3" /> {customerAddressLabel(r.customer)}
+                                </p>
                               </div>
                             </div>
                           </TableCell>
                           <TableCell className="text-xs text-muted-foreground">
-                            <div className="flex items-center gap-1"><Mail className="size-3" /> {r.customer.email}</div>
+                            {r.customer.email && <div className="flex items-center gap-1"><Mail className="size-3" /> {r.customer.email}</div>}
                             {r.customer.phone && <div className="flex items-center gap-1"><Phone className="size-3" /> {r.customer.phone}</div>}
                           </TableCell>
                           <TableCell>
-                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <MapPin className="size-3" /> {r.customer.city}
-                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleToggleActive(r.customer)}
+                              className="inline-flex items-center gap-1"
+                              title={customerIsActive(r.customer) ? "Click to deactivate" : "Click to reactivate"}
+                            >
+                              <Badge
+                                variant="outline"
+                                className={
+                                  customerIsActive(r.customer)
+                                    ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-400"
+                                    : "border-muted-foreground/30 text-muted-foreground"
+                                }
+                              >
+                                <Power className="mr-1 size-3" />
+                                {customerIsActive(r.customer) ? "Active" : "Inactive"}
+                              </Badge>
+                            </button>
                           </TableCell>
                           <TableCell>
                             <Badge variant="outline" className={segmentTone[r.metrics.segment]}>{r.metrics.segment}</Badge>
@@ -392,13 +476,13 @@ function CustomersPage() {
                     {recentOrders.length === 0 ? (
                         <p className="py-8 text-center text-xs text-muted-foreground">No orders yet — place an order from the customer app and it will appear here.</p>
                       ) : recentOrders.map((o) => {
-                        const cust = seededCustomers.find((c) => c.id === o.customer_id) ?? null;
+                        const cust = customers.find((c) => c.id === o.customer_id) ?? null;
                         return (
                           <div key={o.id} className="flex items-center gap-3 border-b border-border/60 pb-2 last:border-0">
                             <ShoppingBag className="size-4 text-muted-foreground" />
                             <div className="min-w-0 flex-1">
                               <p className="text-sm">
-                                <span className="font-medium">{cust?.full_name ?? o.customer_name}</span>{" "}
+                                <span className="font-medium">{cust ? customerDisplayName(cust) : o.customer_name}</span>{" "}
                                 <span className="text-muted-foreground">placed {o.order_number}</span>
                               </p>
                               <p className="text-[11px] text-muted-foreground">

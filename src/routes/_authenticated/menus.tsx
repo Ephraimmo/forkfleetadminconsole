@@ -39,6 +39,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
+import { useRestaurantCloudinaryConfig } from "@/hooks/use-restaurant-cloudinary-config";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
@@ -265,6 +266,7 @@ function MenusPage() {
     () => restaurants.find((r) => r.id === restaurantId) ?? null,
     [restaurants, restaurantId],
   );
+  const { overrides: cloudinaryOverrides } = useRestaurantCloudinaryConfig(selectedRestaurant);
 
   const menuKey = ["menu-fb", restaurantId];
 
@@ -604,6 +606,7 @@ function MenusPage() {
                                   context="product"
                                   value={item.image_url ?? ""}
                                   previewAspect="square"
+                                  overrides={cloudinaryOverrides}
                                   onChange={(url) =>
                                     itemMutation.mutate({
                                       ...item,
@@ -1146,6 +1149,7 @@ function MenusPage() {
                             value={newProductImageUrl}
                             onChange={setNewProductImageUrl}
                             previewAspect="square"
+                            overrides={cloudinaryOverrides}
                           />
                           <Button
                             type="button"
