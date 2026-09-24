@@ -1,0 +1,14 @@
+{
+  "name": "Hearth Admin",
+  "short_name": "Hearth Admin",
+  "description": "Hearth operations console for restaurants, kitchens, dispatch, fleet, finance and support.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fcfaf7",
+  "theme_color": "#fb4500",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/logo-mark.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+  ]
+}

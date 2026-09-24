@@ -68,13 +68,13 @@ import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
 export const Route = createFileRoute("/_authenticated/dispatch")({
   head: () => ({
     meta: [
-      { title: "Dispatch Board — ForkFleet Console" },
+      { title: "Dispatch Board — Hearth Admin" },
       {
         name: "description",
         content:
           "Assign ready orders to drivers, track pickups and ETAs live, and audit every delivery transition.",
       },
-      { property: "og:title", content: "Dispatch Board — ForkFleet Console" },
+      { property: "og:title", content: "Dispatch Board — Hearth Admin" },
       {
         property: "og:description",
         content: "Assign drivers, track pickups and ETAs, audit every transition.",

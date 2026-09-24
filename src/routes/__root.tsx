@@ -12,11 +12,15 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Toaster } from "@/components/ui/sonner";
+import { HearthLogo } from "@/components/hearth-logo";
 
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
+        <Link to="/" aria-label="Hearth Admin — home" className="mb-8 inline-flex">
+          <HearthLogo product="Admin" />
+        </Link>
         <h1 className="text-7xl font-bold text-foreground">404</h1>
         <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
         <p className="mt-2 text-sm text-muted-foreground">
@@ -45,6 +49,9 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
+        <a href="/" aria-label="Hearth Admin — home" className="mb-8 inline-flex">
+          <HearthLogo product="Admin" />
+        </a>
         <h1 className="text-xl font-semibold tracking-tight text-foreground">
           This page didn't load
         </h1>
@@ -78,21 +85,24 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "ForkFleet — Food Ordering & Delivery Operations Console" },
+      { title: "Hearth Admin — Food ordering & delivery operations console" },
       {
         name: "description",
         content:
           "Run restaurants, kitchens, dispatch, fleet, finance and support from one permission-scoped operations console.",
       },
-      { name: "author", content: "ForkFleet" },
-      { property: "og:title", content: "ForkFleet — Delivery Operations Console" },
+      { name: "author", content: "Hearth" },
+      { name: "application-name", content: "Hearth" },
+      { name: "apple-mobile-web-app-title", content: "Hearth" },
+      { name: "theme-color", content: "#fb4500" },
+      { property: "og:site_name", content: "Hearth" },
+      { property: "og:title", content: "Hearth Admin — Delivery operations console" },
       {
         property: "og:description",
         content: "One console for restaurants, kitchens, dispatch, fleet, finance and support.",
       },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:card", content: "summary" },
     ],
     links: [
       {
@@ -103,9 +113,14 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
         rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap",
       },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      // SVG first; a browser takes the first format it understands.
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+      { rel: "alternate icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "apple-touch-icon", href: "/favicon.svg" },
+      { rel: "mask-icon", href: "/logo-mark.svg", color: "#fb4500" },
+      { rel: "manifest", href: "/site.webmanifest" },
     ],
   }),
   shellComponent: RootShell,

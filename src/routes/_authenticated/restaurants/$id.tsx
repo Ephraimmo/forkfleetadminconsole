@@ -139,13 +139,13 @@ async function loadRestaurant(id: string) {
 export const Route = createFileRoute("/_authenticated/restaurants/$id")({
   head: () => ({
     meta: [
-      { title: "Restaurant profile — ForkFleet Console" },
+      { title: "Restaurant profile — Hearth Admin" },
       {
         name: "description",
         content:
           "Configure branches, delivery zones, trading hours and commission for a restaurant partner.",
       },
-      { property: "og:title", content: "Restaurant profile — ForkFleet Console" },
+      { property: "og:title", content: "Restaurant profile — Hearth Admin" },
       {
         property: "og:description",
         content: "Branches, delivery zones, trading hours and commission settings.",

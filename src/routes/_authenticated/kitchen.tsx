@@ -48,12 +48,12 @@ import { useFirebaseOrderSync } from "@/hooks/use-firebase-orders";
 export const Route = createFileRoute("/_authenticated/kitchen")({
   head: () => ({
     meta: [
-      { title: "Live Kitchen Queue — ForkFleet Console" },
+      { title: "Live Kitchen Queue — Hearth Admin" },
       {
         name: "description",
         content: "Real-time cooking and ready queues with audited order status transitions.",
       },
-      { property: "og:title", content: "Live Kitchen Queue — ForkFleet Console" },
+      { property: "og:title", content: "Live Kitchen Queue — Hearth Admin" },
       {
         property: "og:description",
         content: "Real-time cooking and ready queues with audited status transitions.",

@@ -47,7 +47,7 @@ import { number0 } from "@/lib/demo-formatters";
 export const Route = createFileRoute("/_authenticated/audit-logs")({
   head: () => ({
     meta: [
-      { title: "Audit Logs — ForkFleet Console" },
+      { title: "Audit Logs — Hearth Admin" },
       { name: "description", content: "Platform-wide immutable audit trail of every staff action." },
     ],
   }),

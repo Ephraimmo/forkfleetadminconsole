@@ -74,13 +74,13 @@ import { STAFF_ROLES, type StaffRole } from "@/lib/session.functions";
 export const Route = createFileRoute("/_authenticated/notifications")({
   head: () => ({
     meta: [
-      { title: "Alerts & Notifications — ForkFleet Console" },
+      { title: "Alerts & Notifications — Hearth Admin" },
       {
         name: "description",
         content:
           "Compose and broadcast in-app alerts, build event triggers and review delivery in real time.",
       },
-      { property: "og:title", content: "Alerts & Notifications — ForkFleet Console" },
+      { property: "og:title", content: "Alerts & Notifications — Hearth Admin" },
       {
         property: "og:description",
         content: "In-app alerts, triggers and the live notification feed.",

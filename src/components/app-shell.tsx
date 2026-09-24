@@ -1,9 +1,10 @@
 import { Fragment, useEffect, type ReactNode } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut, Moon, Search, Sun, Bell, CheckCheck, Loader2 } from "lucide-react";
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { HearthMark } from "@/components/hearth-logo";
 import {
   Sidebar,
   SidebarContent,
@@ -167,6 +168,14 @@ export function AppShell({
         ) : (
           <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/65">
             <SidebarTrigger aria-label="Toggle navigation" />
+            {/* The sidebar is off-canvas on mobile, so the mark has to live in the header there. */}
+            <Link
+              to="/dashboard"
+              aria-label="Hearth Admin — home"
+              className="text-primary md:hidden"
+            >
+              <HearthMark />
+            </Link>
             <span aria-hidden className="hidden h-5 w-px bg-border sm:block" />
 
             <nav aria-label="Breadcrumb" className="hidden min-w-0 lg:block">

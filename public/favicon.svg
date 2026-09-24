@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Hearth">
+  <rect width="32" height="32" rx="7" fill="#fb4500"/>
+  <g transform="translate(16 16) scale(0.78) translate(-16 -16)">
+    <path fill="#fcfaf7" fill-rule="evenodd" clip-rule="evenodd"
+      d="M16 4C20.5 10 25 13.5 25 19A9 9 0 0 1 7 19C7 13.5 11.5 10 16 4ZM16 13C18 16 20 17.8 20 20.5A4 4 0 0 1 12 20.5C12 17.8 14 16 16 13Z"/>
+  </g>
+</svg>

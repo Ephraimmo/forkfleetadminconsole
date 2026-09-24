@@ -38,13 +38,13 @@ import { getDashboard, type DashboardPayload } from "@/lib/dashboard.functions";
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
     meta: [
-      { title: "Live Operations Dashboard | ForkFleet Console" },
+      { title: "Live Operations Dashboard — Hearth Admin" },
       {
         name: "description",
         content:
-          "Track live orders, revenue, restaurant and driver performance across the ForkFleet delivery network in real time.",
+          "Track live orders, revenue, restaurant and driver performance across the Hearth delivery network in real time.",
       },
-      { property: "og:title", content: "Live Operations Dashboard | ForkFleet Console" },
+      { property: "og:title", content: "Live Operations Dashboard — Hearth Admin" },
       {
         property: "og:description",
         content: "Live orders, revenue trends, dispatch queues and fleet performance in one operations console.",

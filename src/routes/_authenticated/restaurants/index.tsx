@@ -110,12 +110,12 @@ function initials(name: string) {
 export const Route = createFileRoute("/_authenticated/restaurants/")({
   head: () => ({
     meta: [
-      { title: "Restaurant Management — ForkFleet Console" },
+      { title: "Restaurant Management — Hearth Admin" },
       {
         name: "description",
         content: "Register, approve, suspend and configure restaurant partners across the delivery network.",
       },
-      { property: "og:title", content: "Restaurant Management — ForkFleet Console" },
+      { property: "og:title", content: "Restaurant Management — Hearth Admin" },
       { property: "og:description", content: "Register, approve, suspend and configure restaurant partners." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },

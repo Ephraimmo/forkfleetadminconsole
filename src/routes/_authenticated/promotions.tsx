@@ -80,7 +80,7 @@ const TYPE_LABELS: Record<PromoType, { label: string; suffix: string; icon: type
 export const Route = createFileRoute("/_authenticated/promotions")({
   head: () => ({
     meta: [
-      { title: "Promotions & Loyalty — ForkFleet Console" },
+      { title: "Promotions & Loyalty — Hearth Admin" },
       {
         name: "description",
         content:

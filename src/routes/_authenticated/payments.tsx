@@ -84,7 +84,7 @@ import {
 export const Route = createFileRoute("/_authenticated/payments")({
   head: () => ({
     meta: [
-      { title: "Payments — ForkFleet Console" },
+      { title: "Payments — Hearth Admin" },
       { name: "description", content: "Payouts, settlements, commissions and payment method overview." },
     ],
   }),

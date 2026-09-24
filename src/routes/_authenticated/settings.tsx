@@ -88,7 +88,7 @@ import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
 export const Route = createFileRoute("/_authenticated/settings")({
   head: () => ({
     meta: [
-      { title: "Settings — ForkFleet Console" },
+      { title: "Settings — Hearth Admin" },
       {
         name: "description",
         content:
@@ -1016,7 +1016,7 @@ function ApiSection({
     <>
       <SectionShell
         title="API keys"
-        desc="Server-side keys for the ForkFleet API. Full secrets are shown once at creation or rotation — only the masked fingerprint is stored."
+        desc="Server-side keys for the Hearth API. Full secrets are shown once at creation or rotation — only the masked fingerprint is stored."
         hideFooter
       >
         {() => (
@@ -1082,7 +1082,7 @@ function ApiSection({
             ))}
             {keys.length === 0 && (
               <p className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                No API keys yet. Generate one to integrate with the ForkFleet API.
+                No API keys yet. Generate one to integrate with the Hearth API.
               </p>
             )}
             {canManage && (
@@ -1311,7 +1311,7 @@ function GenerateKeyDialog({
             Generate API key
           </DialogTitle>
           <DialogDescription>
-            Creates a new key against the ForkFleet API. The full secret is shown once, right after
+            Creates a new key against the Hearth API. The full secret is shown once, right after
             creation.
           </DialogDescription>
         </DialogHeader>
@@ -1419,7 +1419,7 @@ function AddWebhookDialog({
               id="webhook-url"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://api.example.com/hooks/forkfleet"
+              placeholder="https://api.example.com/hooks/hearth"
               type="url"
             />
           </div>

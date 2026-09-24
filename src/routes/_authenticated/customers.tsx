@@ -60,7 +60,7 @@ import { money, number0 } from "@/lib/demo-formatters";
 export const Route = createFileRoute("/_authenticated/customers")({
   head: () => ({
     meta: [
-      { title: "Customers — ForkFleet Console" },
+      { title: "Customers — Hearth Admin" },
       { name: "description", content: "Customer directory, lifetime value, order history, and segments." },
     ],
   }),

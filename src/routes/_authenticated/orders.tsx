@@ -95,13 +95,13 @@ import { listOrdersAwaitingPaymentApproval } from "@/lib/payments.firebase";
 export const Route = createFileRoute("/_authenticated/orders")({
   head: () => ({
     meta: [
-      { title: "Order Pipeline — ForkFleet Console" },
+      { title: "Order Pipeline — Hearth Admin" },
       {
         name: "description",
         content:
           "Accept new incoming orders, reject with a reason, push orders to the kitchen, assign drivers and track deliveries.",
       },
-      { property: "og:title", content: "Order Pipeline — ForkFleet Console" },
+      { property: "og:title", content: "Order Pipeline — Hearth Admin" },
       {
         property: "og:description",
         content: "Accept, cook, dispatch and deliver — every transition is audited.",

@@ -66,16 +66,16 @@ import { useStaffSession } from "@/hooks/use-staff-session";
 export const Route = createFileRoute("/_authenticated/support")({
   head: () => ({
     meta: [
-      { title: "Support — ForkFleet Console" },
+      { title: "Support — Hearth Admin" },
       {
         name: "description",
         content:
           "Live customer support inbox backed by Firebase — tickets, chats and replies shared with the customer app.",
       },
-      { property: "og:title", content: "Support — ForkFleet Console" },
+      { property: "og:title", content: "Support — Hearth Admin" },
       {
         property: "og:description",
-        content: "Answer customer questions in real time from the ForkFleet operations console.",
+        content: "Answer customer questions in real time from the Hearth Admin console.",
       },
     ],
   }),
@@ -534,7 +534,7 @@ function SupportPage() {
                       <WifiOff className="size-6 text-muted-foreground" />
                       <p className="text-sm font-medium">No conversation selected</p>
                       <p className="max-w-sm text-xs text-muted-foreground">
-                        Customer questions raised in the ForkFleet customer app land here in real
+                        Customer questions raised in the Hearth customer app land here in real
                         time. You can also open a ticket manually for a phone or email enquiry.
                       </p>
                     </CardContent>

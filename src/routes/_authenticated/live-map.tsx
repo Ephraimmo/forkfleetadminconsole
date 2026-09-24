@@ -25,7 +25,7 @@ import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
 export const Route = createFileRoute("/_authenticated/live-map")({
   head: () => ({
     meta: [
-      { title: "Live Map & ETA Routes — ForkFleet Console" },
+      { title: "Live Map & ETA Routes — Hearth Admin" },
       {
         name: "description",
         content:

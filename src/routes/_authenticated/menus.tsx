@@ -91,13 +91,13 @@ export const Route = createFileRoute("/_authenticated/menus")({
   }),
   head: () => ({
     meta: [
-      { title: "Menu Management — ForkFleet Console" },
+      { title: "Menu Management — Hearth Admin" },
       {
         name: "description",
         content:
           "Manage menu categories, products, variants, add-ons, pricing, availability and imagery synced with Firebase.",
       },
-      { property: "og:title", content: "Menu Management — ForkFleet Console" },
+      { property: "og:title", content: "Menu Management — Hearth Admin" },
       {
         property: "og:description",
         content: "Categories, products, variants, add-ons, pricing and availability.",

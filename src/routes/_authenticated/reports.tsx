@@ -38,12 +38,12 @@ const CHART_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#e
 export const Route = createFileRoute("/_authenticated/reports")({
   head: () => ({
     meta: [
-      { title: "Reports & Exports — ForkFleet Console" },
+      { title: "Reports & Exports — Hearth Admin" },
       {
         name: "description",
         content: "Build order, revenue and driver reports by date range and restaurant, then export the results.",
       },
-      { property: "og:title", content: "Reports & Exports — ForkFleet Console" },
+      { property: "og:title", content: "Reports & Exports — Hearth Admin" },
       { property: "og:description", content: "Order, revenue and driver reporting with CSV export." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },

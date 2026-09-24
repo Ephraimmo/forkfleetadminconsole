@@ -139,8 +139,8 @@ export const WEBHOOK_EVENT_CATALOG = [
 
 export const DEFAULT_SETTINGS: PlatformSettings = {
   organisation: {
-    name: "ForkFleet Foods (Pty) Ltd",
-    trading_name: "ForkFleet",
+    name: "Hearth Kitchens (Pty) Ltd",
+    trading_name: "Hearth",
     support_email: "support@forkfleet.demo",
     support_phone: "+27 21 555 0100",
     registration_number: "2024/123456/07",
@@ -148,9 +148,9 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     address: "1 Dock Road, V&A Waterfront, Cape Town, 8001, South Africa",
   },
   branding: {
-    primary_color: "#F2A93B",
+    primary_color: "#FB4500",
     accent_color: "#2B7DF2",
-    app_display_name: "ForkFleet",
+    app_display_name: "Hearth",
     support_url: "https://forkfleet.demo/support",
     custom_domain: "",
   },

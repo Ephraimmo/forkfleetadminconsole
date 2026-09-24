@@ -32,6 +32,7 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { HearthBadge } from "@/components/hearth-logo";
 
 type NavItem = { title: string; url: string; icon: typeof Store; permission?: string; soon?: boolean };
 
@@ -87,17 +88,19 @@ export function AppSidebar({ permissions }: { permissions: string[] }) {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
-        <div className="flex items-center gap-2.5 px-2 py-2">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-panel">
-            <UtensilsCrossed className="size-4" />
-          </span>
+        <Link
+          to="/dashboard"
+          aria-label={collapsed ? "Hearth Admin — home" : undefined}
+          className="flex items-center gap-2.5 rounded-md px-2 py-2"
+        >
+          <HearthBadge className="shadow-panel" />
           {!collapsed && (
             <div className="min-w-0 leading-tight">
-              <p className="truncate font-display text-sm font-semibold tracking-tight">ForkFleet</p>
-              <p className="truncate text-[11px] text-muted-foreground">Operations Console</p>
+              <p className="truncate font-wordmark text-sm font-black tracking-[-0.02em]">Hearth</p>
+              <p className="truncate text-[11px] text-muted-foreground">Admin console</p>
             </div>
           )}
-        </div>
+        </Link>
       </SidebarHeader>
 
       <SidebarContent className="gap-0.5">

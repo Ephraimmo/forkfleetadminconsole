@@ -90,13 +90,13 @@ import { STAFF_ROLES, isStaffRole, type StaffRole } from "@/lib/session.function
 export const Route = createFileRoute("/_authenticated/access")({
   head: () => ({
     meta: [
-      { title: "Access Control — ForkFleet Console" },
+      { title: "Access Control — Hearth Admin" },
       {
         name: "description",
         content:
           "Firebase-backed user provisioning, role assignment and the permission matrix for the operations console.",
       },
-      { property: "og:title", content: "Access Control — ForkFleet Console" },
+      { property: "og:title", content: "Access Control — Hearth Admin" },
       { property: "og:description", content: "Provision users, grant roles, manage access." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -366,7 +366,7 @@ function AddUserDialog({
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                placeholder="thabo@forkfleet.co"
+                placeholder="thabo@hearth.co.za"
                 autoComplete="off"
                 required
               />

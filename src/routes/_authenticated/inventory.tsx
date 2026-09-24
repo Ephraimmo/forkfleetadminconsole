@@ -45,12 +45,12 @@ const CUSTOMS_STATUS: Record<string, { tone: string; label: string }> = {
 export const Route = createFileRoute("/_authenticated/inventory")({
   head: () => ({
     meta: [
-      { title: "Stock & Inventory — ForkFleet Console" },
+      { title: "Stock & Inventory — Hearth Admin" },
       {
         name: "description",
         content: "Track ingredient stock levels, low-stock alerts and menu availability across every kitchen.",
       },
-      { property: "og:title", content: "Stock & Inventory — ForkFleet Console" },
+      { property: "og:title", content: "Stock & Inventory — Hearth Admin" },
       { property: "og:description", content: "Stock levels, low-stock alerts and menu availability per kitchen." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },

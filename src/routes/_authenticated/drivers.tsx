@@ -17,12 +17,12 @@ import type { DriverStatus } from "@/lib/drivers.firebase";
 export const Route = createFileRoute("/_authenticated/drivers")({
   head: () => ({
     meta: [
-      { title: "Driver Fleet — ForkFleet Console" },
+      { title: "Driver Fleet — Hearth Admin" },
       {
         name: "description",
         content: "Review and approve registered drivers, assign restaurant branches and manage the fleet in real time.",
       },
-      { property: "og:title", content: "Driver Fleet — ForkFleet Console" },
+      { property: "og:title", content: "Driver Fleet — Hearth Admin" },
       { property: "og:description", content: "Live driver approvals, branch assignments and status management." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },

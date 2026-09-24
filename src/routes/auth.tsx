@@ -3,12 +3,13 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Loader2, ShieldCheck, UtensilsCrossed } from "lucide-react";
+import { Loader2, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { HearthLogo } from "@/components/hearth-logo";
 import {
   signInDemoWithCredentials,
   writeStoredFirebaseSession,
@@ -19,16 +20,16 @@ import { signInStaffWithFirebase } from "@/lib/auth.firebase";
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
-      { title: "Staff Sign In | ForkFleet Operations Console" },
+      { title: "Staff sign in — Hearth Admin" },
       {
         name: "description",
         content:
-          "Secure sign-in for ForkFleet staff: administrators, dispatchers, restaurant managers, finance and support teams.",
+          "Secure sign-in for Hearth staff: administrators, dispatchers, restaurant managers, finance and support teams.",
       },
-      { property: "og:title", content: "Staff Sign In | ForkFleet Operations Console" },
+      { property: "og:title", content: "Staff sign in — Hearth Admin" },
       {
         property: "og:description",
-        content: "Secure role-based access to the ForkFleet delivery management portal.",
+        content: "Secure role-based access to the Hearth delivery management console.",
       },
     ],
   }),
@@ -77,11 +78,8 @@ function AuthPage() {
     <div className="grid min-h-screen lg:grid-cols-2">
       <div className="relative hidden flex-col justify-between bg-sidebar p-10 lg:flex">
         <div className="grid-noise pointer-events-none absolute inset-0 opacity-40" aria-hidden />
-        <div className="relative flex items-center gap-2">
-          <span className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <UtensilsCrossed className="size-5" />
-          </span>
-          <span className="font-display text-lg font-semibold">ForkFleet</span>
+        <div className="relative">
+          <HearthLogo product="Admin" markClassName="size-9" />
         </div>
         <div className="relative max-w-md space-y-4">
           <h2 className="text-3xl font-semibold leading-tight">
@@ -101,13 +99,13 @@ function AuthPage() {
         </p>
       </div>
 
-      <div className="flex items-center justify-center p-6">
+      <div className="flex flex-col items-center justify-center gap-8 p-6">
+        {/* The brand panel is desktop-only; keep the logo above the fold on mobile. */}
+        <HearthLogo product="Admin" className="lg:hidden" />
         <Card className="w-full max-w-md">
           <CardHeader>
             <CardTitle className="text-xl">Staff access</CardTitle>
-            <CardDescription>
-              Sign in with your ForkFleet account.
-            </CardDescription>
+            <CardDescription>Sign in with your Hearth staff account.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
             <form onSubmit={handleSignIn} className="space-y-4">

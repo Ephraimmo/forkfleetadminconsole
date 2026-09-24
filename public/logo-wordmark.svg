@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 124 32" width="124" height="32" role="img" aria-label="Hearth">
+  <path fill="#fb4500" fill-rule="evenodd" clip-rule="evenodd"
+    d="M16 4C20.5 10 25 13.5 25 19A9 9 0 0 1 7 19C7 13.5 11.5 10 16 4ZM16 13C18 16 20 17.8 20 20.5A4 4 0 0 1 12 20.5C12 17.8 14 16 16 13Z"/>
+  <text x="36" y="23.5" fill="#1c1917" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="22" font-weight="900" letter-spacing="-0.44">Hearth</text>
+</svg>
