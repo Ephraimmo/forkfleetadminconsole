@@ -309,15 +309,20 @@ function collect(
 }
 
 export async function getFirebaseMenu(restaurant: FirebaseRestaurant): Promise<MenuPayload> {
+  return getMenuForRestaurant(restaurant.id);
+}
+
+/** One-off read of a restaurant's whole menu (empty when it has none). */
+export async function getMenuForRestaurant(restaurantId: string): Promise<MenuPayload> {
   if (!isFirebaseAvailable()) return EMPTY;
   const [cats, its, vars, adds, mods] = await Promise.all([
-    fsGet<Record<string, RawMap>>(base(restaurant.id, "categories")),
-    fsGet<Record<string, RawMap>>(base(restaurant.id, "items")),
-    fsGet<Record<string, RawMap>>(base(restaurant.id, "variants")),
-    fsGet<Record<string, RawMap>>(base(restaurant.id, "addons")),
-    fsGet<Record<string, RawMap>>(base(restaurant.id, "modifiers")),
+    fsGet<Record<string, RawMap>>(base(restaurantId, "categories")),
+    fsGet<Record<string, RawMap>>(base(restaurantId, "items")),
+    fsGet<Record<string, RawMap>>(base(restaurantId, "variants")),
+    fsGet<Record<string, RawMap>>(base(restaurantId, "addons")),
+    fsGet<Record<string, RawMap>>(base(restaurantId, "modifiers")),
   ]);
-  return collect(restaurant.id, cats, its, vars, adds, mods);
+  return collect(restaurantId, cats, its, vars, adds, mods);
 }
 
 export function subscribeFirebaseMenu(

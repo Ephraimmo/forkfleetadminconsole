@@ -108,6 +108,7 @@ function ReportsPage() {
       ? [
           "all",
           "pending",
+          "waiting_for_waiter_confirmation",
           "accepted",
           "preparing",
           "ready",

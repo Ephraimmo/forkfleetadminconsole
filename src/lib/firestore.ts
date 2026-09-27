@@ -2,8 +2,8 @@
 // ForkFleet — Cloud Firestore data layer
 // ---------------------------------------------------------------------------
 // This module replaces the previous Realtime Database layer. The whole app
-// talks to Firestore through the seven primitives exported here (fsGet, fsSet,
-// fsUpdate, fsPush, fsSubscribe + the "WithApp" variants), which take the same
+// talks to Firestore through the primitives exported here (fsGet, fsSet,
+// fsUpdate, fsPush, fsBatch, fsTransaction, fsSubscribe + the "WithApp" variants), which take the same
 // logical paths the app has always used (e.g. `restaurants/{id}`,
 // `menus/{restaurantId}/items/{itemId}`, `orders/{id}/payment`).
 //
@@ -50,6 +50,11 @@ export const CONTAINER_DOC = "_";
 const COLLECTIONS: string[] = [
   // core entities
   "restaurants",
+  // dine-in tables: a real sub-collection, one document per table
+  "restaurants/*/tables",
+  "tableQrTokens",
+  // dine-in "Request waiter" calls, one document per call
+  "waiterRequests",
   "restaurantBranches",
   "orders",
   "drivers",
@@ -409,6 +414,127 @@ export async function fsUpdate(
     const nested = patchToNested(patch as Record<string, unknown>, deleteField());
     const payload = base.length > 0 ? nest(base, nested) : nested;
     await setDoc(doc(db, target.docPath), payload, { merge: true });
+  });
+}
+
+export type FsBatchWrite =
+  | { kind: "set"; path: string; value: FirestoreValue }
+  | { kind: "update"; path: string; patch: Record<string, FirestoreValue> }
+  | { kind: "delete"; path: string };
+
+/** The document-level operation a batched or transactional write turns into. */
+type PlannedWrite =
+  | { docPath: string; op: "delete" }
+  | { docPath: string; op: "set"; data: Record<string, unknown>; merge: boolean };
+
+/** Translate a logical write into a Firestore document operation (same rules as fsSet / fsUpdate). */
+function planWrite(write: FsBatchWrite, deleteSentinel: unknown): PlannedWrite {
+  const target = resolvePath(write.path);
+  if (target.kind === "collection") {
+    throw new Error(`Expected a document path, got collection "${write.path}"`);
+  }
+  const field = target.kind === "field" ? target.field : null;
+  const remove = write.kind === "delete" || (write.kind === "set" && write.value == null);
+
+  if (remove) {
+    return field
+      ? { docPath: target.docPath, op: "set", data: nest(field, deleteSentinel), merge: true }
+      : { docPath: target.docPath, op: "delete" };
+  }
+  if (write.kind === "set") {
+    return field
+      ? { docPath: target.docPath, op: "set", data: nest(field, clean(write.value)), merge: true }
+      : {
+          docPath: target.docPath,
+          op: "set",
+          data: clean(write.value) as Record<string, unknown>,
+          merge: false,
+        };
+  }
+  const nested = patchToNested(write.patch as Record<string, unknown>, deleteSentinel);
+  return {
+    docPath: target.docPath,
+    op: "set",
+    data: field ? nest(field, nested) : nested,
+    merge: true,
+  };
+}
+
+/**
+ * Apply several writes atomically — they all land or none do. Each path must
+ * resolve to a document or a field inside one (never a whole collection).
+ * "set" replaces (null deletes) and "update" merges, exactly like fsSet /
+ * fsUpdate.
+ */
+export async function fsBatch(writes: FsBatchWrite[], appName = MAIN_APP_NAME): Promise<void> {
+  if (writes.length === 0) return;
+  return guard("save changes", async () => {
+    const db = await getDbFor(appName);
+    const { deleteField, doc, writeBatch } = await import("firebase/firestore");
+    const batch = writeBatch(db);
+
+    for (const write of writes) {
+      const planned = planWrite(write, deleteField());
+      const ref = doc(db, planned.docPath);
+      if (planned.op === "delete") batch.delete(ref);
+      else if (planned.merge) batch.set(ref, planned.data as never, { merge: true });
+      else batch.set(ref, planned.data as never);
+    }
+
+    await batch.commit();
+  });
+}
+
+export interface FsTransaction {
+  /** Read a document or a field inside one. Every read must come before the first write. */
+  get<T = unknown>(path: string): Promise<T | null>;
+  /** Same as fsSet: a document path replaces the document, a field path sets that field; null deletes. */
+  set(path: string, value: FirestoreValue): void;
+  /** Same as fsUpdate: merge a patch (keys may be nested paths; null deletes a field). */
+  update(path: string, patch: Record<string, FirestoreValue>): void;
+  delete(path: string): void;
+}
+
+/**
+ * Read-modify-write as one Firestore transaction. The writes commit only if
+ * nothing that was read has changed in the meantime; otherwise `run` is
+ * retried with fresh data. Use it wherever two clients could race on the same
+ * records (e.g. two guests ordering at one table at the same moment). `run` may
+ * execute more than once, so it must not have side effects of its own.
+ */
+export async function fsTransaction<T>(
+  run: (tx: FsTransaction) => Promise<T>,
+  appName = MAIN_APP_NAME,
+): Promise<T> {
+  return guard("save changes", async () => {
+    const db = await getDbFor(appName);
+    const { deleteField, doc, runTransaction } = await import("firebase/firestore");
+
+    return runTransaction(db, async (transaction) => {
+      const write = (w: FsBatchWrite) => {
+        const planned = planWrite(w, deleteField());
+        const ref = doc(db, planned.docPath);
+        if (planned.op === "delete") transaction.delete(ref);
+        else if (planned.merge) transaction.set(ref, planned.data as never, { merge: true });
+        else transaction.set(ref, planned.data as never);
+      };
+      const tx: FsTransaction = {
+        async get<R>(path: string) {
+          const target = resolvePath(path);
+          if (target.kind === "collection") {
+            throw new Error(`Transactions read documents, not collections ("${path}")`);
+          }
+          const snap = await transaction.get(doc(db, target.docPath));
+          if (!snap.exists()) return null;
+          const data = snap.data();
+          return ((target.kind === "doc" ? data : pick(data, target.field)) ?? null) as R | null;
+        },
+        set: (path, value) => write({ kind: "set", path, value }),
+        update: (path, patch) => write({ kind: "update", path, patch }),
+        delete: (path) => write({ kind: "delete", path }),
+      };
+      return run(tx);
+    });
   });
 }
 

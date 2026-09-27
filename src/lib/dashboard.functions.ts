@@ -104,6 +104,7 @@ const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDat
 
 const IN_FLIGHT = [
   "pending",
+  "waiting_for_waiter_confirmation",
   "accepted",
   "preparing",
   "ready",

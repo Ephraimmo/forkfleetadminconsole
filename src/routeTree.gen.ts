@@ -16,6 +16,7 @@ import { Route as AuthenticatedAccessRouteImport } from './routes/_authenticated
 import { Route as AuthenticatedAuditLogsRouteImport } from './routes/_authenticated/audit-logs'
 import { Route as AuthenticatedCustomersRouteImport } from './routes/_authenticated/customers'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedDineInRouteImport } from './routes/_authenticated/dine-in'
 import { Route as AuthenticatedDispatchRouteImport } from './routes/_authenticated/dispatch'
 import { Route as AuthenticatedDriversRouteImport } from './routes/_authenticated/drivers'
 import { Route as AuthenticatedInventoryRouteImport } from './routes/_authenticated/inventory'
@@ -29,6 +30,7 @@ import { Route as AuthenticatedPromotionsRouteImport } from './routes/_authentic
 import { Route as AuthenticatedReportsRouteImport } from './routes/_authenticated/reports'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedSupportRouteImport } from './routes/_authenticated/support'
+import { Route as AuthenticatedTablesRouteImport } from './routes/_authenticated/tables'
 import { Route as AuthenticatedRestaurantsIndexRouteImport } from './routes/_authenticated/restaurants/index'
 import { Route as AuthenticatedRestaurantsIdRouteImport } from './routes/_authenticated/restaurants/$id'
 
@@ -64,6 +66,11 @@ const AuthenticatedCustomersRoute = AuthenticatedCustomersRouteImport.update({
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedDineInRoute = AuthenticatedDineInRouteImport.update({
+  id: '/dine-in',
+  path: '/dine-in',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedDispatchRoute = AuthenticatedDispatchRouteImport.update({
@@ -132,6 +139,11 @@ const AuthenticatedSupportRoute = AuthenticatedSupportRouteImport.update({
   path: '/support',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedTablesRoute = AuthenticatedTablesRouteImport.update({
+  id: '/tables',
+  path: '/tables',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedRestaurantsIndexRoute =
   AuthenticatedRestaurantsIndexRouteImport.update({
     id: '/restaurants/',
@@ -152,6 +164,7 @@ export interface FileRoutesByFullPath {
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/customers': typeof AuthenticatedCustomersRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/dine-in': typeof AuthenticatedDineInRoute
   '/dispatch': typeof AuthenticatedDispatchRoute
   '/drivers': typeof AuthenticatedDriversRoute
   '/inventory': typeof AuthenticatedInventoryRoute
@@ -165,6 +178,7 @@ export interface FileRoutesByFullPath {
   '/reports': typeof AuthenticatedReportsRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/support': typeof AuthenticatedSupportRoute
+  '/tables': typeof AuthenticatedTablesRoute
   '/restaurants/$id': typeof AuthenticatedRestaurantsIdRoute
   '/restaurants/': typeof AuthenticatedRestaurantsIndexRoute
 }
@@ -175,6 +189,7 @@ export interface FileRoutesByTo {
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/customers': typeof AuthenticatedCustomersRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/dine-in': typeof AuthenticatedDineInRoute
   '/dispatch': typeof AuthenticatedDispatchRoute
   '/drivers': typeof AuthenticatedDriversRoute
   '/inventory': typeof AuthenticatedInventoryRoute
@@ -188,6 +203,7 @@ export interface FileRoutesByTo {
   '/reports': typeof AuthenticatedReportsRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/support': typeof AuthenticatedSupportRoute
+  '/tables': typeof AuthenticatedTablesRoute
   '/restaurants/$id': typeof AuthenticatedRestaurantsIdRoute
   '/restaurants': typeof AuthenticatedRestaurantsIndexRoute
 }
@@ -200,6 +216,7 @@ export interface FileRoutesById {
   '/_authenticated/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/_authenticated/customers': typeof AuthenticatedCustomersRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/dine-in': typeof AuthenticatedDineInRoute
   '/_authenticated/dispatch': typeof AuthenticatedDispatchRoute
   '/_authenticated/drivers': typeof AuthenticatedDriversRoute
   '/_authenticated/inventory': typeof AuthenticatedInventoryRoute
@@ -213,6 +230,7 @@ export interface FileRoutesById {
   '/_authenticated/reports': typeof AuthenticatedReportsRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/support': typeof AuthenticatedSupportRoute
+  '/_authenticated/tables': typeof AuthenticatedTablesRoute
   '/_authenticated/restaurants/$id': typeof AuthenticatedRestaurantsIdRoute
   '/_authenticated/restaurants/': typeof AuthenticatedRestaurantsIndexRoute
 }
@@ -225,6 +243,7 @@ export interface FileRouteTypes {
     | '/audit-logs'
     | '/customers'
     | '/dashboard'
+    | '/dine-in'
     | '/dispatch'
     | '/drivers'
     | '/inventory'
@@ -238,6 +257,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/settings'
     | '/support'
+    | '/tables'
     | '/restaurants/$id'
     | '/restaurants/'
   fileRoutesByTo: FileRoutesByTo
@@ -248,6 +268,7 @@ export interface FileRouteTypes {
     | '/audit-logs'
     | '/customers'
     | '/dashboard'
+    | '/dine-in'
     | '/dispatch'
     | '/drivers'
     | '/inventory'
@@ -261,6 +282,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/settings'
     | '/support'
+    | '/tables'
     | '/restaurants/$id'
     | '/restaurants'
   id:
@@ -272,6 +294,7 @@ export interface FileRouteTypes {
     | '/_authenticated/audit-logs'
     | '/_authenticated/customers'
     | '/_authenticated/dashboard'
+    | '/_authenticated/dine-in'
     | '/_authenticated/dispatch'
     | '/_authenticated/drivers'
     | '/_authenticated/inventory'
@@ -285,6 +308,7 @@ export interface FileRouteTypes {
     | '/_authenticated/reports'
     | '/_authenticated/settings'
     | '/_authenticated/support'
+    | '/_authenticated/tables'
     | '/_authenticated/restaurants/$id'
     | '/_authenticated/restaurants/'
   fileRoutesById: FileRoutesById
@@ -344,6 +368,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/dine-in': {
+      id: '/_authenticated/dine-in'
+      path: '/dine-in'
+      fullPath: '/dine-in'
+      preLoaderRoute: typeof AuthenticatedDineInRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/dispatch': {
@@ -437,6 +468,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSupportRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/tables': {
+      id: '/_authenticated/tables'
+      path: '/tables'
+      fullPath: '/tables'
+      preLoaderRoute: typeof AuthenticatedTablesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/restaurants/': {
       id: '/_authenticated/restaurants/'
       path: '/restaurants'
@@ -459,6 +497,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAuditLogsRoute: typeof AuthenticatedAuditLogsRoute
   AuthenticatedCustomersRoute: typeof AuthenticatedCustomersRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedDineInRoute: typeof AuthenticatedDineInRoute
   AuthenticatedDispatchRoute: typeof AuthenticatedDispatchRoute
   AuthenticatedDriversRoute: typeof AuthenticatedDriversRoute
   AuthenticatedInventoryRoute: typeof AuthenticatedInventoryRoute
@@ -472,6 +511,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedReportsRoute: typeof AuthenticatedReportsRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
   AuthenticatedSupportRoute: typeof AuthenticatedSupportRoute
+  AuthenticatedTablesRoute: typeof AuthenticatedTablesRoute
   AuthenticatedRestaurantsIdRoute: typeof AuthenticatedRestaurantsIdRoute
   AuthenticatedRestaurantsIndexRoute: typeof AuthenticatedRestaurantsIndexRoute
 }
@@ -481,6 +521,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAuditLogsRoute: AuthenticatedAuditLogsRoute,
   AuthenticatedCustomersRoute: AuthenticatedCustomersRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedDineInRoute: AuthenticatedDineInRoute,
   AuthenticatedDispatchRoute: AuthenticatedDispatchRoute,
   AuthenticatedDriversRoute: AuthenticatedDriversRoute,
   AuthenticatedInventoryRoute: AuthenticatedInventoryRoute,
@@ -494,6 +535,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedReportsRoute: AuthenticatedReportsRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
   AuthenticatedSupportRoute: AuthenticatedSupportRoute,
+  AuthenticatedTablesRoute: AuthenticatedTablesRoute,
   AuthenticatedRestaurantsIdRoute: AuthenticatedRestaurantsIdRoute,
   AuthenticatedRestaurantsIndexRoute: AuthenticatedRestaurantsIndexRoute,
 }

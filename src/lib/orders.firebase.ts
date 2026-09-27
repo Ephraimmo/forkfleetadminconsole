@@ -24,8 +24,10 @@ import {
   fsGet,
   fsSet,
   fsSubscribe,
+  fsTransaction,
   type FirestoreValue,
 } from "@/lib/firestore";
+import type { DineInOrderInfo } from "@/lib/dine-in";
 
 /**
  * The order's overall status, shared with the customer app and restaurant
@@ -40,9 +42,14 @@ import {
  * `orderStage()` in dispatch.functions.ts treats any surviving records with
  * those values as their real equivalent, so old in-flight orders keep
  * working correctly without a data migration.
+ *
+ * "waiting_for_waiter_confirmation" is dine-in only: a guest's order sits
+ * there until a waiter reviews (and may edit) it and confirms it, which moves
+ * it to "accepted" and onto the kitchen board. See dine-in.ts.
  */
 export type OrderStatus =
   | "pending"
+  | "waiting_for_waiter_confirmation"
   | "accepted"
   | "preparing"
   | "ready"
@@ -71,8 +78,10 @@ export type DriverStatus =
 /** How the customer receives the order.
  *  - "delivery": kitchen → dispatch assigns a driver → picked_up → on_the_way → delivered.
  *  - "pickup":   kitchen → ready → customer collects at the counter
- *               (status "picked_up") → staff closes it ("delivered"). No driver. */
-export type OrderType = "delivery" | "pickup";
+ *               (status "picked_up") → staff closes it ("delivered"). No driver.
+ *  - "dine_in":  ordered at a table via its QR code (details in `dine_in`,
+ *               see dine-in.ts) → kitchen → ready → served ("delivered"). No driver. */
+export type OrderType = "delivery" | "pickup" | "dine_in";
 
 export type PaymentMethod = "card" | "cash" | "wallet" | "eft" | "apple_pay" | "google_pay";
 
@@ -109,6 +118,16 @@ export interface OrderLine {
   notes: string | null;
   variant: OrderLineVariant | null;
   addons: OrderLineAddon[];
+  /** Dine-in only: the guest who added this line and when (a shared table
+   *  order collects lines from several guests over time). */
+  added_by?: { guest_id: string; label: string } | null;
+  added_at?: string | null;
+  /** Dine-in only: the staff member who added this line while editing the
+   *  order (lines a guest added have `added_by` instead). */
+  added_by_staff?: string | null;
+  /** Dine-in only: last time a waiter changed this line, and who. */
+  edited_at?: string | null;
+  edited_by?: string | null;
 }
 
 export interface TimelineEvent {
@@ -183,6 +202,10 @@ export interface FirebaseOrder {
   rejection_reason: string | null;
   rejected_by: string | null;
   rejected_at: string | null;
+
+  /** Table, order mode, session and waiter — present only when
+   *  order_type is "dine_in". */
+  dine_in?: DineInOrderInfo | null;
 
   created_at: string;
   updated_at: string;
@@ -352,10 +375,17 @@ async function appendTimeline(
 
 /** Canonical read of an order's fulfilment type (legacy records default to delivery). */
 export function orderType(o: { order_type?: OrderType | null }): OrderType {
-  return o.order_type === "pickup" ? "pickup" : "delivery";
+  if (o.order_type === "pickup" || o.order_type === "dine_in") return o.order_type;
+  return "delivery";
 }
 
 const DELIVERY_ONLY_STATUSES: OrderStatus[] = ["assigned", "on_the_way"];
+// Dine-in orders are served at the table — no driver, and no counter collection.
+const NOT_FOR_DINE_IN_STATUSES: OrderStatus[] = ["assigned", "picked_up", "on_the_way"];
+// Only a dine-in order waits for a waiter.
+const DINE_IN_ONLY_STATUSES: OrderStatus[] = ["waiting_for_waiter_confirmation"];
+// Statuses an order can still be rejected from (before anyone has accepted it).
+const REJECTABLE_STATUSES: OrderStatus[] = ["pending", "waiting_for_waiter_confirmation"];
 
 export async function setFirebaseOrderStatus(input: {
   orderId: string;
@@ -365,13 +395,38 @@ export async function setFirebaseOrderStatus(input: {
   actor?: string | null;
 }): Promise<void> {
   if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
-  const order = await fsGet<FirebaseOrder>(orderPath(input.orderId));
-  if (!order) throw new Error("Order not found");
+  // Read and rewrite the order in one transaction: this writes the whole
+  // document back, so it must never race a guest adding items to a dine-in
+  // table order (see table-sessions.firebase.ts) and silently drop them.
+  await fsTransaction(async (tx) => {
+    const order = await tx.get<FirebaseOrder>(orderPath(input.orderId));
+    if (!order) throw new Error("Order not found");
+    tx.set(orderPath(input.orderId), w({ ...order, ...statusChangePatch(order, input) }));
+  });
+  await appendTimeline(input.orderId, {
+    status: input.status,
+    note: input.note ?? null,
+    actor: input.actor ?? null,
+  });
+}
 
+/** Validate a status change for this order and build the fields it sets. */
+function statusChangePatch(
+  order: FirebaseOrder,
+  input: Parameters<typeof setFirebaseOrderStatus>[0],
+): Partial<FirebaseOrder> {
   if (DELIVERY_ONLY_STATUSES.includes(input.status) && orderType(order) === "pickup") {
     throw new Error(
       `Customer pickup orders never go through "${input.status.replace("_", " ")}" — mark collected, then complete.`,
     );
+  }
+  if (NOT_FOR_DINE_IN_STATUSES.includes(input.status) && orderType(order) === "dine_in") {
+    throw new Error(
+      `Dine-in orders never go through "${input.status.replace("_", " ")}" — they're served at the table.`,
+    );
+  }
+  if (DINE_IN_ONLY_STATUSES.includes(input.status) && orderType(order) !== "dine_in") {
+    throw new Error("Only dine-in orders wait for a waiter's confirmation.");
   }
 
   const ts = now();
@@ -425,13 +480,7 @@ export async function setFirebaseOrderStatus(input: {
   if (patch.eta_minutes != null && patch.eta_minutes > 0) {
     patch.eta_at = new Date(Date.now() + patch.eta_minutes * 60_000).toISOString();
   }
-
-  await fsSet(orderPath(input.orderId), w({ ...order, ...patch }));
-  await appendTimeline(input.orderId, {
-    status: input.status,
-    note: input.note ?? null,
-    actor: input.actor ?? null,
-  });
+  return patch;
 }
 
 export async function assignFirebaseDriver(input: {
@@ -450,6 +499,9 @@ export async function assignFirebaseDriver(input: {
     throw new Error(
       "Customer pickup orders don't take drivers — the customer collects at the counter.",
     );
+  }
+  if (orderType(order) === "dine_in") {
+    throw new Error("Dine-in orders don't take drivers — they're served at the table.");
   }
   // Assigning/reassigning is only valid while `status` is still "ready" —
   // per the real driver-app contract, picking a driver does NOT change
@@ -534,8 +586,9 @@ export async function unassignFirebaseDriver(orderId: string): Promise<void> {
 
 /**
  * Reject a pending order with a reason (visible to the customer). Only valid
- * while the order is still "pending"; once accepted it must be cancelled
- * through the normal cancellation flow.
+ * while the order is still "pending" (or, dine-in, waiting for a waiter's
+ * confirmation); once accepted it must be cancelled through the normal
+ * cancellation flow.
  */
 export async function rejectFirebaseOrder(input: {
   orderId: string;
@@ -543,26 +596,30 @@ export async function rejectFirebaseOrder(input: {
   actor?: string | null;
 }): Promise<void> {
   if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
-  const order = await fsGet<FirebaseOrder>(orderPath(input.orderId));
-  if (!order) throw new Error("Order not found");
-  if (order.status !== "pending") {
-    throw new Error(`Cannot reject an order that is already ${order.status.replace("_", " ")}`);
-  }
-  const ts = now();
-  const patch: Partial<FirebaseOrder> = {
-    status: "rejected",
-    rejection_reason: input.reason.trim() || "No reason provided",
-    rejected_by: input.actor ?? null,
-    rejected_at: ts,
-    cancelled_at: ts,
-    driver_id: null,
-    driver_name: null,
-    driver_phone: null,
-    driver_photo: null,
-    driver_rating: null,
-    updated_at: ts,
-  };
-  await fsSet(orderPath(input.orderId), w({ ...order, ...patch }));
+  // One transaction, like setFirebaseOrderStatus: never drops items a dine-in
+  // guest adds while the order is being rejected.
+  await fsTransaction(async (tx) => {
+    const order = await tx.get<FirebaseOrder>(orderPath(input.orderId));
+    if (!order) throw new Error("Order not found");
+    if (!REJECTABLE_STATUSES.includes(order.status)) {
+      throw new Error(`Cannot reject an order that is already ${order.status.replace(/_/g, " ")}`);
+    }
+    const ts = now();
+    const patch: Partial<FirebaseOrder> = {
+      status: "rejected",
+      rejection_reason: input.reason.trim() || "No reason provided",
+      rejected_by: input.actor ?? null,
+      rejected_at: ts,
+      cancelled_at: ts,
+      driver_id: null,
+      driver_name: null,
+      driver_phone: null,
+      driver_photo: null,
+      driver_rating: null,
+      updated_at: ts,
+    };
+    tx.set(orderPath(input.orderId), w({ ...order, ...patch }));
+  });
   await appendTimeline(input.orderId, {
     status: "rejected",
     note: `Rejected: ${input.reason.trim() || "No reason provided"}`,
@@ -584,7 +641,9 @@ export async function addFirebaseOrderNote(
 
 export async function createFirebaseOrder(input: {
   order_number?: string;
-  order_type?: OrderType; // default "delivery"; pickup orders skip driver flow
+  // default "delivery"; pickup orders skip driver flow. Dine-in orders are
+  // only ever placed by the customer app from a table QR code.
+  order_type?: Exclude<OrderType, "dine_in">;
   restaurant_id: string;
   restaurant_name: string;
   restaurant_image?: string | null;

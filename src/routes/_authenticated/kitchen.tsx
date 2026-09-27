@@ -320,7 +320,21 @@ function OrderTicket({
           <li key={item.id} className="flex justify-between gap-2">
             <span>
               {item.quantity}× {item.item_name}
+              {item.options.length > 0 && (
+                <span className="block pl-4 text-[11px] text-muted-foreground">
+                  {item.options.join(" · ")}
+                </span>
+              )}
             </span>
+            {item.added_late && (
+              <Badge
+                variant="outline"
+                className="h-4 border-amber-500/40 px-1 text-[9px] text-amber-300"
+                title="Added by a guest after this order was accepted"
+              >
+                New
+              </Badge>
+            )}
           </li>
         ))}
       </ul>

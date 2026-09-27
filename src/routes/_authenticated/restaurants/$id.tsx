@@ -5,6 +5,7 @@ import { useServerFn } from "@/lib/use-demo-fn";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  Armchair,
   Bike,
   CheckCircle2,
   Coins,
@@ -55,6 +56,7 @@ import { fsGet, isFirebaseAvailable, fsSet } from "@/lib/firestore";
 import { useRestaurantCloudinaryConfig } from "@/hooks/use-restaurant-cloudinary-config";
 import { RestaurantRewardsEditor } from "@/components/loyalty/restaurant-rewards-editor";
 import { PaymentMethodsEditor } from "@/components/restaurants/payment-methods-editor";
+import { TablesManager } from "@/components/restaurants/tables-manager";
 import {
   defaultPaymentConfig,
   subscribePaymentConfig,
@@ -543,6 +545,9 @@ function RestaurantDetailPage() {
                 <TabsTrigger value="profile">Profile & commission</TabsTrigger>
                 <TabsTrigger value="hours">Business hours</TabsTrigger>
                 <TabsTrigger value="branches">Branches</TabsTrigger>
+                <TabsTrigger value="tables" className="gap-1.5">
+                  <Armchair className="size-3.5" /> Tables
+                </TabsTrigger>
                 <TabsTrigger value="zones" className="gap-1.5">
                   <Gauge className="size-3.5" /> Delivery fees
                 </TabsTrigger>
@@ -1034,6 +1039,15 @@ function RestaurantDetailPage() {
                     </Table>
                   </CardContent>
                 </Card>
+              </TabsContent>
+
+              <TabsContent value="tables">
+                <TablesManager
+                  restaurantId={restaurant.id}
+                  restaurantName={restaurant.name}
+                  canManage={canManage}
+                  actor={staff.session?.email ?? null}
+                />
               </TabsContent>
 
               <TabsContent value="zones">

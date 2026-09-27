@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  Armchair,
   LayoutDashboard,
   Store,
   UtensilsCrossed,
@@ -7,6 +8,7 @@ import {
   ReceiptText,
   Users,
   Bike,
+  ConciergeBell,
   Radar,
   Map as MapIcon,
   CreditCard,
@@ -43,6 +45,8 @@ const groups: { label: string; items: NavItem[] }[] = [
       { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard, permission: "dashboard.view" },
       { title: "Live map", url: "/live-map", icon: MapIcon, permission: "dispatch.manage" },
       { title: "Orders", url: "/orders", icon: ReceiptText, permission: "orders.view" },
+      { title: "Dine-in orders", url: "/dine-in", icon: ConciergeBell, permission: "orders.view" },
+      { title: "Table overview", url: "/tables", icon: Armchair, permission: "orders.view" },
       { title: "Kitchen queue", url: "/kitchen", icon: UtensilsCrossed, permission: "orders.view" },
       { title: "Dispatch", url: "/dispatch", icon: Radar, permission: "dispatch.manage" },
       { title: "Drivers", url: "/drivers", icon: Bike, permission: "drivers.view" },

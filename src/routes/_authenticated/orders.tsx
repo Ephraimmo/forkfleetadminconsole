@@ -8,6 +8,7 @@ import {
   Bike,
   CheckCircle2,
   Clock3,
+  ConciergeBell,
   FileText,
   History,
   Inbox,
@@ -27,6 +28,10 @@ import {
 } from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
+import {
+  DineInActionsProvider,
+  DineInOrderActions,
+} from "@/components/dine-in/dine-in-order-actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -91,6 +96,8 @@ import {
 import { subscribeAllBranches, type RestaurantBranch } from "@/lib/branches.firebase";
 import { useDriverFleet, type DriverRow } from "@/hooks/use-driver-fleet";
 import { listOrdersAwaitingPaymentApproval } from "@/lib/payments.firebase";
+import { tableDisplayName } from "@/lib/tables.firebase";
+import { isAwaitingWaiterConfirmation } from "@/lib/dine-in";
 
 export const Route = createFileRoute("/_authenticated/orders")({
   head: () => ({
@@ -113,12 +120,22 @@ export const Route = createFileRoute("/_authenticated/orders")({
   component: OrdersPage,
 });
 
+// Dine-in orders waiting for a waiter get Edit / Confirm / Reject (and their dialogs).
+function OrdersPage() {
+  return (
+    <DineInActionsProvider>
+      <OrderPipeline />
+    </DineInActionsProvider>
+  );
+}
+
 // Filter dropdown: the raw `status` values only (assigning/reassigning never
 // changes `status`, so this alone can't distinguish "unassigned" from
 // "waiting to accept", or "heading to the restaurant" from "at the
 // restaurant" — the stage badge on each row does that; see orderStage()).
 const STATUSES: OrderStatus[] = [
   "pending",
+  "waiting_for_waiter_confirmation",
   "accepted",
   "preparing",
   "ready",
@@ -133,6 +150,7 @@ const STATUSES: OrderStatus[] = [
 
 const STAGE_TONE: Record<OrderStage, string> = {
   pending: "bg-slate-500/15 text-slate-300 border-slate-500/30",
+  waiting_for_waiter_confirmation: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
   accepted: "bg-violet-500/15 text-violet-300 border-violet-500/30",
   preparing: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   ready: "bg-amber-500/15 text-amber-400 border-amber-500/25",
@@ -151,6 +169,8 @@ const STAGE_TONE: Record<OrderStage, string> = {
 
 // Pipeline stage rules (see docs/ORDER_WORKFLOW_HANDOVER.md):
 //  - pending              → only Accept / Reject
+//  - waiting_for_waiter_confirmation (dine-in) → Edit / Confirm & send to
+//                           kitchen / Reject — see DineInOrderActions
 //  - accepted             → kitchen picks up
 //  - preparing            → kitchen marks ready
 //  - unassigned           → dispatch assigns a driver (`driver_id` only —
@@ -189,7 +209,7 @@ const money = (value: number) =>
 
 type ViewMode = "table" | "cards";
 
-function OrdersPage() {
+function OrderPipeline() {
   useFirebaseOrderSync();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
@@ -314,7 +334,10 @@ function OrdersPage() {
   const rows = ordersQuery.data ?? [];
   const drivers = fleet.rows;
 
-  const pendingCount = rows.filter((r) => r.status === "pending").length;
+  // New orders nobody has acted on yet, including dine-in orders waiting for a waiter.
+  const pendingCount = rows.filter(
+    (r) => r.status === "pending" || r.status === "waiting_for_waiter_confirmation",
+  ).length;
 
   return (
     <PermissionGate
@@ -346,7 +369,7 @@ function OrdersPage() {
               <SelectItem value="all">All statuses</SelectItem>
               {STATUSES.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s.replace("_", " ")}
+                  {s.replace(/_/g, " ")}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -714,11 +737,15 @@ function OrdersTable({
           {rows.map((order) => {
             const stage = orderStage(order);
             const action = nextActionFor(order);
-            const isIncoming = order.status === "pending";
+            const awaitingWaiter = isWaitingForWaiter(order);
+            const isIncoming = order.status === "pending" && !awaitingWaiter;
             const hasNotes = orderHasNotes(order);
             const awaitingPayment = paymentHoldOrderIds.has(order.id);
             return (
-              <TableRow key={order.id} className={isIncoming ? "bg-slate-500/5" : ""}>
+              <TableRow
+                key={order.id}
+                className={isIncoming ? "bg-slate-500/5" : awaitingWaiter ? "bg-fuchsia-500/5" : ""}
+              >
                 <TableCell className="font-medium">
                   <span className="inline-flex items-center gap-1.5">
                     {order.order_number}
@@ -778,6 +805,10 @@ function OrdersTable({
                     )
                   ) : order.order_type === "pickup" ? (
                     <span className="text-xs text-sky-400">Customer collects</span>
+                  ) : order.order_type === "dine_in" ? (
+                    <span className="text-xs text-violet-400">
+                      {tableDisplayName(order.dine_in?.table_label ?? "—")}
+                    </span>
                   ) : (
                     <span className="text-muted-foreground">{order.driver_name ?? "—"}</span>
                   )}
@@ -788,6 +819,9 @@ function OrdersTable({
                 <TableCell className="text-right tabular-nums">{money(order.total)}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex flex-wrap justify-end gap-1">
+                    {canManage && awaitingWaiter && (
+                      <DineInOrderActions order={order} compact className="justify-end gap-1" />
+                    )}
                     {canManage && isIncoming && (
                       <>
                         {awaitingPayment ? (
@@ -875,6 +909,7 @@ const TERMINAL_STATUSES = new Set<OrderStatus>(["rejected", "cancelled", "refund
 /** Which Kanban column an order belongs in. Almost always just its stage —
  *  "pending" and the three terminal statuses get their own catch-all buckets. */
 function cardGroupKey(order: DispatchOrder): CardGroupKey {
+  if (isWaitingForWaiter(order)) return "waiting_for_waiter_confirmation";
   if (order.status === "pending") return "incoming";
   if (TERMINAL_STATUSES.has(order.status)) return "terminal";
   return orderStage(order);
@@ -882,6 +917,12 @@ function cardGroupKey(order: DispatchOrder): CardGroupKey {
 
 const CARD_GROUPS: { key: CardGroupKey; label: string; tone: string; icon: typeof Inbox }[] = [
   { key: "incoming", label: "Incoming (new)", tone: "text-slate-300", icon: Inbox },
+  {
+    key: "waiting_for_waiter_confirmation",
+    label: "Dine-in — waiting for waiter confirmation",
+    tone: "text-fuchsia-300",
+    icon: ConciergeBell,
+  },
   { key: "accepted", label: "Queued for kitchen", tone: "text-violet-300", icon: Clock3 },
   { key: "preparing", label: "Preparing", tone: "text-amber-300", icon: UtensilsCrossed },
   { key: "ready", label: "Ready for pickup", tone: "text-amber-400", icon: ShoppingBag },
@@ -1049,14 +1090,15 @@ function OrderCard({
     0,
     Math.round((Date.now() - new Date(order.placed_at).getTime()) / 60000),
   );
-  const isIncoming = order.status === "pending";
+  const awaitingWaiter = isWaitingForWaiter(order);
+  const isIncoming = order.status === "pending" && !awaitingWaiter;
   const isRejected = order.status === "rejected";
   const hasNotes = orderHasNotes(order);
   const itemNotes = order.items.filter((it) => (it.notes ?? "").trim().length > 0);
 
   return (
     <div
-      className={`rounded-lg border p-3 ${isIncoming ? "border-slate-500/30 bg-slate-500/5" : isRejected ? "border-rose-600/25 bg-rose-600/5" : "border-border bg-card"}`}
+      className={`rounded-lg border p-3 ${isIncoming ? "border-slate-500/30 bg-slate-500/5" : awaitingWaiter ? "border-fuchsia-500/30 bg-fuchsia-500/5" : isRejected ? "border-rose-600/25 bg-rose-600/5" : "border-border bg-card"}`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -1121,6 +1163,13 @@ function OrderCard({
               <ShoppingBag className="size-3.5 text-sky-400" />
               <span className="text-sky-400">Customer collects</span>
             </>
+          ) : order.order_type === "dine_in" ? (
+            <>
+              <ConciergeBell className="size-3.5 text-violet-400" />
+              <span className="text-violet-400">
+                {tableDisplayName(order.dine_in?.table_label ?? "—")}
+              </span>
+            </>
           ) : (
             <>
               <Bike className="size-3.5" />
@@ -1173,6 +1222,7 @@ function OrderCard({
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
+        {canManage && awaitingWaiter && <DineInOrderActions order={order} compact />}
         {canManage && isIncoming && (
           <>
             {awaitingPayment ? (
@@ -1253,6 +1303,11 @@ function OrderCard({
       </div>
     </div>
   );
+}
+
+/** A dine-in order a waiter still has to confirm (it isn't in the kitchen yet). */
+function isWaitingForWaiter(order: DispatchOrder): boolean {
+  return order.order_type === "dine_in" && isAwaitingWaiterConfirmation(order.status);
 }
 
 function orderHasNotes(order: DispatchOrder): boolean {

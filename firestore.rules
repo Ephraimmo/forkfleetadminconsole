@@ -93,6 +93,50 @@ service cloud.firestore {
       }
     }
 
+    // Dine-in tables live at /restaurants/{id}/tables/{tableId} and are covered
+    // by the recursive match above.
+
+    // ------------------------------------------------ dine-in table QR codes
+    // /tableQrTokens/{token} maps the opaque token printed in a table's QR
+    // code to its restaurant + table. A client may read a token it already
+    // holds (get) but can never list the collection, so codes can't be
+    // enumerated or swapped for another table's. Only platform staff or
+    // members of that restaurant may issue, update or revoke a token, and a
+    // token can never be re-pointed at a different restaurant or table.
+    match /tableQrTokens/{token} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if isPlatformAdmin()
+        || isRestaurantMember(request.resource.data.restaurant_id);
+      allow update: if (isPlatformAdmin() || isRestaurantMember(resource.data.restaurant_id))
+        && request.resource.data.restaurant_id == resource.data.restaurant_id
+        && request.resource.data.table_id == resource.data.table_id;
+      allow delete: if isPlatformAdmin()
+        || resource == null
+        || isRestaurantMember(resource.data.restaurant_id);
+    }
+
+    // ----------------------------------------------- dine-in waiter requests
+    // /waiterRequests/{id} is a guest's "Request waiter" call. Staff read every
+    // call (the console watches the whole collection, as it does orders); only
+    // platform staff or members of that restaurant may create or change one,
+    // and a call can never be moved to another restaurant, table, seating or
+    // guest. A guest may read their own call ("a waiter is on the way").
+    // Guests placing calls directly is still to do — see
+    // docs/DINE_IN_TABLES_QR_HANDOVER.md, "Known gaps".
+    match /waiterRequests/{requestId} {
+      allow get: if signedIn() && resource.data.guest_id == request.auth.uid;
+      allow read: if isPlatformAdmin() || isAnyRestaurantMember();
+      allow create: if isPlatformAdmin()
+        || isRestaurantMember(request.resource.data.restaurant_id);
+      allow update: if (isPlatformAdmin() || isRestaurantMember(resource.data.restaurant_id))
+        && request.resource.data.restaurant_id == resource.data.restaurant_id
+        && request.resource.data.table_id == resource.data.table_id
+        && request.resource.data.table_session_id == resource.data.table_session_id
+        && request.resource.data.guest_id == resource.data.guest_id;
+      allow delete: if isPlatformAdmin();
+    }
+
     match /restaurantBranches/{restaurantId} {
       allow read: if isPlatformAdmin() || isRestaurantMember(restaurantId);
       allow write: if isPlatformAdmin() || isRestaurantMember(restaurantId);

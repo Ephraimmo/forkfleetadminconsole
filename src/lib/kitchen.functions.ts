@@ -11,6 +11,7 @@ import {
 } from "@/lib/orders.firebase";
 import { audit } from "@/lib/audit";
 import { profiles } from "@/lib/demo-store";
+import { describeLineOptions } from "@/lib/dine-in-order-edit";
 
 export type KitchenStatus = "accepted" | "preparing" | "ready" | "assigned" | "picked_up";
 
@@ -28,13 +29,28 @@ export interface KitchenOrder {
   restaurant_id: string;
   restaurant_name: string;
   customer_name: string;
-  items: { id: string; item_name: string; quantity: number; notes: string | null }[];
+  items: {
+    id: string;
+    item_name: string;
+    quantity: number;
+    notes: string | null;
+    /** Size and extras, e.g. ["Large", "Cooking: Rare", "Extra cheese ×2"]. */
+    options: string[];
+    /** Added after the kitchen accepted the order (a dine-in guest adding to a table order). */
+    added_late: boolean;
+  }[];
 }
 
 // Kitchen only sees orders once they've been accepted on the Orders page.
 // The Incoming column on Orders is where new customer orders land; kitchen
 // starts from "accepted" (chef accepts it onto the pass) → preparing → ready.
+// A dine-in order waiting for a waiter's confirmation is never on the board.
 const KITCHEN_STATUSES: OrderStatus[] = ["accepted", "preparing", "ready"];
+
+/** Whether an order in this status is on the kitchen board. */
+export function isKitchenStatus(status: string): boolean {
+  return KITCHEN_STATUSES.includes(status as OrderStatus);
+}
 
 let cached: KitchenOrder[] = [];
 const subs = new Set<(rows: KitchenOrder[]) => void>();
@@ -60,6 +76,9 @@ function toKitchen(p: OrderPayload): KitchenOrder {
       item_name: [l.variant?.name, l.name].filter(Boolean).join(" — "),
       quantity: l.quantity,
       notes: l.notes,
+      // The variant is already in item_name.
+      options: describeLineOptions({ addons: l.addons }),
+      added_late: Boolean(l.added_at && o.accepted_at && l.added_at > o.accepted_at),
     })),
   };
 }
@@ -94,6 +113,7 @@ export function onKitchenChanged(cb: (rows: KitchenOrder[]) => void): () => void
 
 const NEXT_STATUS: Record<OrderStatus, OrderStatus | undefined> = {
   pending: undefined, // must be accepted on the Orders page, not in kitchen
+  waiting_for_waiter_confirmation: undefined, // dine-in: a waiter confirms it first
   accepted: "preparing",
   preparing: "ready",
   ready: undefined, // dispatch picks up from here
@@ -111,7 +131,7 @@ export async function getKitchenQueue(
 ): Promise<KitchenOrder[]> {
   const rid = input?.restaurantId;
   return getCached()
-    .filter((o) => KITCHEN_STATUSES.includes(o.status))
+    .filter((o) => isKitchenStatus(o.status))
     .filter((o) => !rid || rid === "all" || o.restaurant_id === rid)
     .slice()
     .sort((a, b) => a.placed_at.localeCompare(b.placed_at))
