@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { format } from "date-fns";
 
 // Firestore is replaced by the in-memory fake in src/lib/testing/fake-firestore.ts.
 vi.mock("@/lib/firestore", async (importOriginal) =>
@@ -7,13 +8,19 @@ vi.mock("@/lib/firestore", async (importOriginal) =>
 
 import { fakeDb as db } from "@/lib/testing/fake-firestore";
 import {
+  dineInStatusLabel,
   isAwaitingWaiterConfirmation,
   normalizeDineIn,
+  readyOrderAlerts,
+  WAITER_CONFIRMED,
   WAITING_FOR_WAITER_CONFIRMATION,
 } from "@/lib/dine-in";
 import {
   applyOrderEdit,
+  describeAddonChanges,
+  describeOrderLine,
   lineTotal,
+  normalizeOrderEdits,
   menuItemOptions,
   menuItemPrice,
   modifierAddonId,
@@ -22,9 +29,14 @@ import {
   withQuantity,
   type OrderEditLine,
 } from "@/lib/dine-in-order-edit";
-import { confirmDineInOrder, editDineInOrder } from "@/lib/dine-in-orders.firebase";
+import {
+  confirmDineInOrder,
+  editDineInOrder,
+  markDineInOrderServed,
+  sendDineInOrderToKitchen,
+} from "@/lib/dine-in-orders.firebase";
 import { orderStage } from "@/lib/dispatch.functions";
-import { isKitchenStatus } from "@/lib/kitchen.functions";
+import { isKitchenStatus, isOnKitchenBoard } from "@/lib/kitchen.functions";
 import {
   normalizeMenuItem,
   normalizeMenuModifier,
@@ -33,12 +45,14 @@ import {
 } from "@/lib/menus.firebase";
 import {
   createFirebaseOrder,
+  rejectFirebaseOrder,
   setFirebaseOrderStatus,
   type OrderLine,
   type OrderLineAddon,
 } from "@/lib/orders.firebase";
 import { placeDineInOrder, type DineInItemInput } from "@/lib/table-sessions.firebase";
-import { saveTable, type RestaurantTable } from "@/lib/tables.firebase";
+import { buildTableOverview } from "@/lib/table-overview";
+import { listTables, saveTable, type RestaurantTable } from "@/lib/tables.firebase";
 
 const RID = "rst-nonna";
 type Doc = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -145,21 +159,21 @@ describe("Task 9 — orders wait for a waiter's confirmation", () => {
     );
   });
 
-  it("confirming sends it to the kitchen and records the waiter", async () => {
+  it("confirming records the waiter, but the order stays out of the kitchen until it's sent", async () => {
     const placed = await place("guest_a", [item("Steak", 1, 189)]);
 
     await confirmDineInOrder({ order_id: placed.order_id, actor: SAM });
 
     const order = orderDoc(placed.order_id);
-    expect(order["status"]).toBe("accepted");
-    expect(isKitchenStatus(order["status"])).toBe(true);
-    expect(order["accepted_at"]).toBeTruthy();
+    expect(order["status"]).toBe(WAITER_CONFIRMED);
+    expect(isKitchenStatus(order["status"])).toBe(false);
+    expect(order["accepted_at"]).toBeNull();
     expect(normalizeDineIn(order["dine_in"])).toMatchObject({
       confirmed_by: "Sam",
       waiter_id: "staff_sam",
       waiter_name: "Sam",
     });
-    expect(history(placed.order_id)).toContain("Confirmed by Sam — sent to the kitchen");
+    expect(history(placed.order_id)).toContain("Confirmed with the table by Sam");
   });
 
   it("keeps a waiter who is already set", async () => {
@@ -189,7 +203,9 @@ describe("Task 9 — orders wait for a waiter's confirmation", () => {
     ).toMatchObject({
       code: "dine-in/order-locked",
     });
-    expect(history(placed.order_id).filter((n) => n?.startsWith("Confirmed by"))).toHaveLength(1);
+    expect(
+      history(placed.order_id).filter((n) => n?.startsWith("Confirmed with the table by")),
+    ).toHaveLength(1);
   });
 
   it("won't send the kitchen items the waiter hasn't seen", async () => {
@@ -207,7 +223,7 @@ describe("Task 9 — orders wait for a waiter's confirmation", () => {
       reviewed_line_ids: lines(placed.order_id).map((l) => l.id),
       actor: SAM,
     });
-    expect(orderDoc(placed.order_id)["status"]).toBe("accepted");
+    expect(orderDoc(placed.order_id)["status"]).toBe(WAITER_CONFIRMED);
   });
 
   it("a dine-in order written as “pending” before the waiter step can still be confirmed", async () => {
@@ -216,7 +232,7 @@ describe("Task 9 — orders wait for a waiter's confirmation", () => {
     expect(isAwaitingWaiterConfirmation("pending")).toBe(true);
 
     await confirmDineInOrder({ order_id: placed.order_id, actor: SAM });
-    expect(orderDoc(placed.order_id)["status"]).toBe("accepted");
+    expect(orderDoc(placed.order_id)["status"]).toBe(WAITER_CONFIRMED);
   });
 
   it("only dine-in orders wait for a waiter", async () => {
@@ -308,7 +324,9 @@ describe("Task 10 — the waiter edits an order before confirming it", () => {
     steak = lineNamed(placed.order_id, "Steak");
     expect(steak.addons).toEqual([]);
     expect(steak.line_total).toBe(200);
-    expect(history(placed.order_id).at(-1)).toBe("Edited by Sam: Steak: no size; extras removed");
+    expect(history(placed.order_id).at(-1)).toBe(
+      "Edited by Sam: Steak: size Large removed; Cooking: Medium removed; Extra cheese ×2 removed",
+    );
   });
 
   it("changes item notes and special instructions, and adds a note to the history", async () => {
@@ -393,6 +411,7 @@ describe("Task 10 — the waiter edits an order before confirming it", () => {
   it("can't be edited once it has been sent to the kitchen", async () => {
     const placed = await place("guest_a", [item("Burger", 1, 100)]);
     await confirmDineInOrder({ order_id: placed.order_id, actor: SAM });
+    await sendDineInOrderToKitchen({ order_id: placed.order_id, actor: SAM });
     const before = structuredClone(orderDoc(placed.order_id));
 
     await expect(edit(placed.order_id, ([b]) => [{ ...b!, quantity: 5 }])).rejects.toMatchObject({
@@ -535,5 +554,395 @@ describe("modifiers and pricing", () => {
       { index: 2, label: "Garlic", price: 10 },
     ]);
     expect(menuItemPrice(steak)).toBe(180);
+  });
+});
+
+/* ----------------------------------------------------- Tasks 11–14 helpers */
+
+const MUSHROOM_SAUCE: OrderLineAddon = {
+  id: "addon_mushroom",
+  name: "Mushroom Sauce",
+  price: 25,
+  quantity: 1,
+};
+
+/** At a given local time of day, so the history reads e.g. "18:47". */
+function at(hours: number, minutes: number) {
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 8, 26, hours, minutes) });
+}
+
+/** Whether the kitchen board would show this order. */
+const onBoard = (id: string) => isOnKitchenBoard(orderDoc(id) as { status: string });
+
+/** Confirm with the table, send to the kitchen, cook until ready. */
+async function throughTheKitchen(id: string) {
+  await confirmDineInOrder({ order_id: id, actor: SAM });
+  await sendDineInOrderToKitchen({ order_id: id, actor: SAM });
+  await setFirebaseOrderStatus({ orderId: id, status: "preparing" });
+  await setFirebaseOrderStatus({ orderId: id, status: "ready" });
+}
+
+/** Table 12 as the Table overview shows it. */
+async function tableTwelve() {
+  const orders = [...db.docs.entries()]
+    .filter(([path]) => path.startsWith("orders/"))
+    .map(([, raw]) => {
+      const doc = raw as Doc;
+      return {
+        id: doc["id"],
+        order_number: doc["order_number"],
+        status: doc["status"],
+        order_type: doc["order_type"],
+        restaurant_id: doc["restaurant_id"],
+        created_at: doc["created_at"],
+        placed_at: doc["placed_at"],
+        customer_name: doc["customer_name"],
+        dine_in: normalizeDineIn(doc["dine_in"]),
+        items: Object.values(doc["items"] as Record<string, Doc>).map((l) => ({
+          item_name: l["name"] as string,
+          quantity: l["quantity"] as number,
+        })),
+      };
+    });
+  const entries = buildTableOverview(await listTables(RID), orders);
+  return entries.find((e) => e.table.label === "12")!;
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/* ----------------------------------------------------------------- Task 11 */
+
+describe("Task 11 — order edit history", () => {
+  it("records the original line, who changed it, what changed and when — never just overwriting it", async () => {
+    const placed = await place("guest_a", [item("Steak", 1, 189, { addons: [MUSHROOM_SAUCE] })]);
+    const id = placed.order_id;
+
+    at(18, 47);
+    await edit(id, ([steak]) => [{ ...steak!, addons: [] }]);
+
+    const [record, ...more] = normalizeOrderEdits(orderDoc(id)["edits"]);
+    expect(more).toHaveLength(0);
+    expect(record).toMatchObject({
+      by: "Sam",
+      by_id: "staff_sam",
+      summary: "Steak: Mushroom Sauce removed",
+      status_before: WAITING_FOR_WAITER_CONFIRMATION,
+      total_before: 224.7,
+      total_after: 198.45,
+      confirmation_withdrawn: false,
+    });
+    expect(format(new Date(record!.at), "HH:mm")).toBe("18:47");
+    expect(record!.lines).toHaveLength(1);
+    expect(record!.lines[0]).toMatchObject({
+      kind: "changed",
+      item_name: "Steak",
+      original: "Steak + Mushroom Sauce",
+      updated: "Steak",
+      changes: ["Mushroom Sauce removed"],
+    });
+    // The customer's line is kept exactly as ordered, next to what it became.
+    expect(record!.lines[0]!.before).toMatchObject({
+      name: "Steak",
+      addons: [MUSHROOM_SAUCE],
+      line_total: 214,
+      added_by: { guest_id: "guest_a", label: "Customer 1" },
+    });
+    expect(record!.lines[0]!.after).toMatchObject({
+      addons: [],
+      line_total: 189,
+      edited_by: "Sam",
+    });
+    // The order itself now holds the edited line, and its timeline says so.
+    expect(lineNamed(id, "Steak").addons).toEqual([]);
+    expect(history(id)).toContain("Edited by Sam: Steak: Mushroom Sauce removed");
+  });
+
+  it("keeps every edit, with removed and added lines in full", async () => {
+    const placed = await place("guest_a", [item("Burger", 2, 100), item("Chips", 1, 30)]);
+    const id = placed.order_id;
+
+    await edit(id, (ls) => ls.filter((l) => l.name !== "Chips"));
+    await edit(id, (ls) => [
+      ...ls.map((l) => withQuantity({ ...l, addons: l.addons ?? [] }, 1)),
+      item("Salad", 1, 60),
+    ]);
+
+    const edits = normalizeOrderEdits(orderDoc(id)["edits"]);
+    expect(edits.map((e) => e.summary)).toEqual([
+      "Removed Chips ×1",
+      "Burger: ×2 → ×1; Added Salad ×1",
+    ]);
+    expect(edits[0]!.lines[0]).toMatchObject({
+      kind: "removed",
+      original: "Chips",
+      updated: null,
+      after: null,
+      before: { name: "Chips", quantity: 1, unit_price: 30, added_by: { guest_id: "guest_a" } },
+    });
+    expect(edits[1]!.lines.map((l) => [l.kind, l.original, l.updated])).toEqual([
+      ["changed", "2× Burger", "Burger"],
+      ["added", null, "Salad"],
+    ]);
+    expect(edits[1]!.lines[1]!.after).toMatchObject({ added_by_staff: "Sam" });
+  });
+
+  it("describes add-on, modifier and size changes precisely", () => {
+    const cheese1 = { ...cheese, quantity: 1 };
+    const cheese2 = { ...cheese, quantity: 2 };
+    expect(describeAddonChanges([MUSHROOM_SAUCE], [])).toEqual(["Mushroom Sauce removed"]);
+    expect(describeAddonChanges([], [cheese2])).toEqual(["Extra cheese ×2 added"]);
+    expect(describeAddonChanges([cheese1], [cheese2])).toEqual(["Extra cheese ×1 → ×2"]);
+    expect(describeAddonChanges([cooking(rare)], [cooking(medium)])).toEqual([
+      "Cooking: Rare → Medium",
+    ]);
+    // A modifier's quantity follows the line's — not a change of its own.
+    expect(describeAddonChanges([cooking(rare)], [{ ...cooking(rare), quantity: 2 }])).toEqual([]);
+    expect(
+      describeOrderLine({
+        name: "Burger",
+        quantity: 2,
+        variant: { id: "var_large", name: "Large", price_delta: 40 },
+        addons: [cooking(rare), cheese2],
+      }),
+    ).toBe("2× Burger (Large) + Cooking: Rare + Extra cheese ×2");
+  });
+
+  it("saving an unchanged order, or only a note, adds nothing to the edit history", async () => {
+    const placed = await place("guest_a", [item("Burger", 1, 100)]);
+    await edit(placed.order_id, (ls) => ls);
+    await edit(placed.order_id, (ls) => ls, { note: "Window seat" });
+    expect(normalizeOrderEdits(orderDoc(placed.order_id)["edits"])).toEqual([]);
+  });
+
+  it("the kitchen only ever receives the final confirmed order", async () => {
+    const placed = await place("guest_a", [item("Steak", 1, 189, { addons: [MUSHROOM_SAUCE] })]);
+    const id = placed.order_id;
+    await edit(id, ([steak]) => [{ ...steak!, addons: [] }]);
+    expect(onBoard(id)).toBe(false);
+
+    await confirmDineInOrder({ order_id: id, actor: SAM });
+    expect(onBoard(id)).toBe(false);
+    await sendDineInOrderToKitchen({ order_id: id, actor: SAM });
+
+    expect(onBoard(id)).toBe(true);
+    expect(lines(id).map(describeOrderLine)).toEqual(["Steak"]);
+    await expect(edit(id, ([s]) => [{ ...s!, addons: [MUSHROOM_SAUCE] }])).rejects.toMatchObject({
+      code: "dine-in/order-locked",
+    });
+  });
+});
+
+/* ----------------------------------------------------------------- Task 12 */
+
+describe("Task 12 — confirm the order, then send it to the kitchen", () => {
+  it("goes customer order → waiter review → confirmation → kitchen, and never skips a step", async () => {
+    const placed = await place("guest_a", [item("Steak", 1, 189)]);
+    const id = placed.order_id;
+
+    await expect(sendDineInOrderToKitchen({ order_id: id, actor: SAM })).rejects.toMatchObject({
+      code: "dine-in/order-locked",
+      message: expect.stringMatching(/confirm it with the table first/),
+    });
+    // Nor around the waiter with a plain status change.
+    for (const status of [
+      "waiter_confirmed",
+      "accepted",
+      "preparing",
+      "ready",
+      "delivered",
+    ] as const) {
+      await expect(setFirebaseOrderStatus({ orderId: id, status })).rejects.toThrow();
+    }
+    expect(orderDoc(id)["status"]).toBe(WAITING_FOR_WAITER_CONFIRMATION);
+    expect(onBoard(id)).toBe(false);
+
+    await confirmDineInOrder({ order_id: id, actor: SAM });
+    expect(onBoard(id)).toBe(false);
+    await expect(setFirebaseOrderStatus({ orderId: id, status: "preparing" })).rejects.toThrow(
+      /hasn't been confirmed by a waiter and sent to the kitchen/,
+    );
+
+    await sendDineInOrderToKitchen({ order_id: id, actor: LEE });
+    const order = orderDoc(id);
+    expect(order["status"]).toBe("accepted");
+    expect(order["accepted_at"]).toBeTruthy();
+    expect(onBoard(id)).toBe(true);
+    expect(dineInStatusLabel(order["status"])).toBe("Sent to kitchen");
+    expect(normalizeDineIn(order["dine_in"])).toMatchObject({
+      confirmed_by: "Sam",
+      sent_to_kitchen_by: "Lee",
+      waiter_name: "Sam",
+    });
+    expect(history(id)).toEqual(
+      expect.arrayContaining(["Confirmed with the table by Sam", "Sent to the kitchen by Lee"]),
+    );
+    await expect(sendDineInOrderToKitchen({ order_id: id, actor: SAM })).rejects.toMatchObject({
+      code: "dine-in/order-locked",
+      message: expect.stringMatching(/already been sent/),
+    });
+  });
+
+  it("a confirmed order takes no more items from guests — they start the table's next order", async () => {
+    const first = await place("guest_a", [item("Steak")]);
+    await confirmDineInOrder({ order_id: first.order_id, actor: SAM });
+
+    const late = await place("guest_b", [item("Coke")]);
+
+    expect(late).toMatchObject({ created: true, round: 2 });
+    expect(lines(first.order_id).map((l) => l.name)).toEqual(["Steak"]);
+    expect(orderDoc(late.order_id)["status"]).toBe(WAITING_FOR_WAITER_CONFIRMATION);
+  });
+
+  it("changing a confirmed order withdraws the confirmation — a note alone doesn't", async () => {
+    const placed = await place("guest_a", [item("Burger", 1, 100)]);
+    const id = placed.order_id;
+    await confirmDineInOrder({ order_id: id, actor: SAM });
+
+    await edit(id, (ls) => ls, { note: "Birthday table" });
+    expect(orderDoc(id)["status"]).toBe(WAITER_CONFIRMED);
+
+    const result = await edit(id, ([b]) => [{ ...b!, quantity: 2 }]);
+    expect(result.confirmation_withdrawn).toBe(true);
+    expect(orderDoc(id)["status"]).toBe(WAITING_FOR_WAITER_CONFIRMATION);
+    expect(normalizeDineIn(orderDoc(id)["dine_in"])!.confirmed_at).toBeNull();
+    expect(normalizeOrderEdits(orderDoc(id)["edits"])[0]).toMatchObject({
+      status_before: WAITER_CONFIRMED,
+      confirmation_withdrawn: true,
+    });
+    await expect(sendDineInOrderToKitchen({ order_id: id, actor: SAM })).rejects.toMatchObject({
+      code: "dine-in/order-locked",
+    });
+
+    await confirmDineInOrder({ order_id: id, actor: SAM });
+    await sendDineInOrderToKitchen({ order_id: id, actor: SAM });
+    expect(orderDoc(id)["status"]).toBe("accepted");
+  });
+
+  it("a confirmed order can still be rejected before it goes to the kitchen", async () => {
+    const placed = await place("guest_a", [item("Burger")]);
+    await confirmDineInOrder({ order_id: placed.order_id, actor: SAM });
+    await rejectFirebaseOrder({ orderId: placed.order_id, reason: "Kitchen closed" });
+    expect(orderDoc(placed.order_id)["status"]).toBe("rejected");
+  });
+
+  it("the kitchen board never shows a dine-in order no waiter has confirmed", () => {
+    const board = (status: string, order_type: string, confirmed_at: string | null) =>
+      isOnKitchenBoard({ status, order_type, dine_in: { confirmed_at } });
+    expect(board("accepted", "dine_in", null)).toBe(false);
+    expect(board("preparing", "dine_in", null)).toBe(false);
+    expect(board("accepted", "dine_in", "2026-09-26T18:47:00Z")).toBe(true);
+    expect(board(WAITER_CONFIRMED, "dine_in", "2026-09-26T18:47:00Z")).toBe(false);
+    expect(isOnKitchenBoard({ status: "accepted", order_type: "delivery" })).toBe(true);
+  });
+});
+
+/* ----------------------------------------------------------------- Task 13 */
+
+describe("Task 13 — the waiter hears when the kitchen marks an order ready", () => {
+  const row = (id: string, status: string, order_type = "dine_in") => ({ id, status, order_type });
+
+  it("alerts once per order, only when it turns ready, and clears when it's served", () => {
+    // The first look only takes stock: orders already ready raise no alert.
+    let r = readyOrderAlerts(null, [row("a", "ready"), row("b", "preparing")]);
+    expect(r.alerts).toEqual([]);
+    expect([...r.ready]).toEqual(["a"]);
+
+    r = readyOrderAlerts(r.ready, [row("a", "ready"), row("b", "ready")]);
+    expect(r.alerts.map((o) => o.id)).toEqual(["b"]);
+
+    r = readyOrderAlerts(r.ready, [row("a", "ready"), row("b", "ready")]);
+    expect(r.alerts).toEqual([]);
+
+    r = readyOrderAlerts(r.ready, [row("a", "delivered"), row("b", "ready")]);
+    expect(r.cleared).toEqual(["a"]);
+    expect(r.alerts).toEqual([]);
+  });
+
+  it("never alerts waiters about delivery or pickup orders", () => {
+    const r = readyOrderAlerts(new Set(), [
+      row("c", "ready", "delivery"),
+      row("d", "ready", "pickup"),
+    ]);
+    expect(r.alerts).toEqual([]);
+  });
+
+  it("the alert carries the table and order number once the kitchen marks it ready", async () => {
+    const placed = await place("guest_a", [item("Steak")]);
+    const id = placed.order_id;
+    const snapshot = () => [
+      orderDoc(id) as Doc & { id: string; status: string; order_type: string },
+    ];
+    const before = readyOrderAlerts(null, snapshot());
+
+    await throughTheKitchen(id);
+
+    const [alert] = readyOrderAlerts(before.ready, snapshot()).alerts;
+    expect(alert!["dine_in"].table_label).toBe("12");
+    expect(alert!["order_number"]).toBe(placed.order_number);
+  });
+});
+
+/* ----------------------------------------------------------------- Task 14 */
+
+describe("Task 14 — mark the order served", () => {
+  it("records the order, table, waiter and time served, and updates the order and table", async () => {
+    const placed = await place("guest_a", [item("Steak")]);
+    const id = placed.order_id;
+    await expect(markDineInOrderServed({ order_id: id, actor: LEE })).rejects.toMatchObject({
+      code: "dine-in/order-locked",
+      message: expect.stringMatching(/hasn't marked it ready/),
+    });
+
+    await throughTheKitchen(id);
+    let entry = await tableTwelve();
+    expect(entry).toMatchObject({ status: "occupied", service: "ready_to_serve" });
+    expect(entry.ready_orders.map((o) => o.id)).toEqual([id]);
+    // A plain status change can't do it — it wouldn't record the waiter.
+    await expect(setFirebaseOrderStatus({ orderId: id, status: "delivered" })).rejects.toThrow(
+      /Mark as served/,
+    );
+
+    at(19, 5);
+    const served = await markDineInOrderServed({ order_id: id, actor: LEE });
+
+    expect(served).toMatchObject({
+      order_id: id,
+      order_number: placed.order_number,
+      table_label: "12",
+      served_by: "Lee",
+    });
+    expect(format(new Date(served.served_at), "HH:mm")).toBe("19:05");
+    const order = orderDoc(id);
+    expect(order["status"]).toBe("delivered");
+    expect(dineInStatusLabel(order["status"])).toBe("Served");
+    expect(order["delivered_at"]).toBe(served.served_at);
+    expect(normalizeDineIn(order["dine_in"])).toMatchObject({
+      table_label: "12",
+      served_at: served.served_at,
+      served_by: "Lee",
+      served_by_id: "staff_lee",
+      waiter_name: "Sam", // the waiter who confirmed it stays the order's waiter
+    });
+    expect(history(id)).toContain("Served at Table 12 by Lee");
+
+    // The table: nothing left in progress, everything served, guests still seated.
+    entry = await tableTwelve();
+    expect(entry).toMatchObject({ status: "occupied", service: "served", ready_orders: [] });
+    expect(entry.active_orders).toEqual([]);
+
+    await expect(markDineInOrderServed({ order_id: id, actor: LEE })).rejects.toMatchObject({
+      message: expect.stringMatching(/already been served/),
+    });
+  });
+
+  it("an order the kitchen hasn't finished can't be served", async () => {
+    const placed = await place("guest_a", [item("Steak")]);
+    await confirmDineInOrder({ order_id: placed.order_id, actor: SAM });
+    await expect(
+      markDineInOrderServed({ order_id: placed.order_id, actor: SAM }),
+    ).rejects.toMatchObject({ code: "dine-in/order-locked" });
+    expect(orderDoc(placed.order_id)["status"]).toBe(WAITER_CONFIRMED);
   });
 });

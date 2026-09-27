@@ -1,5 +1,7 @@
-// A dine-in order waiting for a waiter: table, order number, what's on it,
-// and the waiter's actions (Edit / Confirm & send to kitchen / Reject).
+// A dine-in order the waiter has to act on: table, order number, what's on
+// it, and the waiter's next step — Edit / Confirm order / Reject while it
+// waits for confirmation, Send to kitchen once confirmed, Mark as served once
+// the kitchen has it ready.
 
 import { formatDistanceToNow } from "date-fns";
 
@@ -13,6 +15,17 @@ const money = (value: number) =>
   `R ${value.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const SHOWN_ITEMS = 4;
+
+/** Card colours by step: waiting for confirmation, confirmed, ready to serve. */
+function tone(status: string): { card: string; label: string } {
+  if (status === "waiter_confirmed") {
+    return { card: "border-sky-500/30 bg-sky-500/5", label: "text-sky-300" };
+  }
+  if (status === "ready") {
+    return { card: "border-emerald-500/30 bg-emerald-500/5", label: "text-emerald-300" };
+  }
+  return { card: "border-fuchsia-500/30 bg-fuchsia-500/5", label: "text-fuchsia-300" };
+}
 
 export function AwaitingConfirmationCard({
   order,
@@ -29,8 +42,9 @@ export function AwaitingConfirmationCard({
   const who = customerSessionLabel(order);
   const placed = new Date(order.created_at || order.placed_at);
   const round = order.dine_in?.round ?? 1;
+  const colours = tone(order.status);
   return (
-    <div className="rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/5 p-3">
+    <div className={`rounded-lg border p-3 ${colours.card}`}>
       <div className="flex items-start justify-between gap-2">
         <button
           type="button"
@@ -52,7 +66,7 @@ export function AwaitingConfirmationCard({
           </span>
         )}
       </div>
-      <p className="mt-1.5 text-sm font-medium text-fuchsia-300">
+      <p className={`mt-1.5 text-sm font-medium ${colours.label}`}>
         {dineInStatusLabel(order.status)}
       </p>
 

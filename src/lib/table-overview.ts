@@ -2,7 +2,12 @@
 // the tables (and the seating on each), the order book and guests' waiter
 // calls. Pure, so the page can recompute it whenever any of them changes.
 
-import { DINE_IN_STATUS_LABEL, OPEN_DINE_IN_STATUSES, type DineInOrderInfo } from "@/lib/dine-in";
+import {
+  DINE_IN_STATUS_LABEL,
+  isWithWaiter,
+  OPEN_DINE_IN_STATUSES,
+  type DineInOrderInfo,
+} from "@/lib/dine-in";
 import type { OrderStatus } from "@/lib/orders.firebase";
 import {
   isSessionIdle,
@@ -18,6 +23,20 @@ export const OCCUPANCY_LABEL: Record<TableOccupancy, string> = {
   occupied: "Occupied",
   available: "Available",
   inactive: "Inactive",
+};
+
+/**
+ * Where the table's service is at, most urgent first: food waiting to be
+ * taken to the table, an order the waiter still has to confirm or send, food
+ * being cooked, or everything served. Null when nothing has been ordered.
+ */
+export type TableService = "ready_to_serve" | "with_waiter" | "in_kitchen" | "served";
+
+export const SERVICE_LABEL: Record<TableService, string> = {
+  ready_to_serve: "Ready to serve",
+  with_waiter: "Waiting for the waiter",
+  in_kitchen: "In the kitchen",
+  served: "All served",
 };
 
 /** Statuses that end an order without it being served. */
@@ -72,6 +91,17 @@ export interface TableOverview {
   guest_count: number;
   /** Guests' waiter calls at this table that nobody has resolved yet, oldest first. */
   waiter_requests: WaiterRequest[];
+  /** Where the table's service is at (see TableService). */
+  service: TableService | null;
+  /** Orders the kitchen has finished that are waiting to be served, oldest first. */
+  ready_orders: OverviewOrder[];
+}
+
+function serviceOf(orders: OverviewOrder[]): TableService | null {
+  if (orders.some((o) => o.status === "ready")) return "ready_to_serve";
+  if (orders.some((o) => isWithWaiter(o.status))) return "with_waiter";
+  if (orders.some((o) => o.status === "accepted" || o.status === "preparing")) return "in_kitchen";
+  return orders.length > 0 ? "served" : null;
 }
 
 function toOverviewOrder(o: OverviewSourceOrder): OverviewOrder {
@@ -164,6 +194,8 @@ export function buildTableOverview(
       guest_count: session ? Object.keys(session.guests).length : 0,
       // Shown whatever the seating, so a call left open after the table was cleared still gets resolved.
       waiter_requests: calls,
+      service: occupied ? serviceOf(orders) : null,
+      ready_orders: occupied ? orders.filter((o) => o.status === "ready") : [],
     };
   });
 }

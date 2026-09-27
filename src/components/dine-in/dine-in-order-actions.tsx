@@ -1,14 +1,17 @@
-// Waiter actions for a dine-in order waiting for confirmation: Edit order,
-// Confirm & send to kitchen, Reject.
+// Waiter actions for a dine-in order, whichever step it's at:
+//   waiting for confirmation → Edit order · Confirm order · Reject
+//   confirmed with the table → Edit order · Send to kitchen · Reject
+//   ready (kitchen finished) → Mark as served
 //
 // Wrap a page in <DineInActionsProvider> and drop <DineInOrderActions> next
-// to any waiting order. The provider owns the edit and reject dialogs and
-// follows the live order book, so a dialog stays open (and says so) when the
-// order changes underneath it — e.g. another waiter confirms it first.
+// to any dine-in order; it shows nothing when the waiter has nothing to do.
+// The provider owns the edit and reject dialogs and follows the live order
+// book, so a dialog stays open (and says so) when the order changes
+// underneath it — e.g. another waiter confirms it first.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Ban, ChefHat, Loader2, Pencil, XCircle } from "lucide-react";
+import { Ban, ChefHat, CheckCheck, ConciergeBell, Loader2, Pencil, XCircle } from "lucide-react";
 
 import { EditDineInOrderDialog } from "@/components/dine-in/edit-dine-in-order-dialog";
 import { Button } from "@/components/ui/button";
@@ -24,15 +27,28 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useStaffActor } from "@/hooks/use-staff-actor";
 import { audit } from "@/lib/audit";
-import { isAwaitingWaiterConfirmation } from "@/lib/dine-in";
-import { confirmDineInOrder, dineInOrderName } from "@/lib/dine-in-orders.firebase";
+import {
+  hasDineInAction,
+  isAwaitingWaiterConfirmation,
+  isWithWaiter,
+  WAITER_CONFIRMED,
+} from "@/lib/dine-in";
+import {
+  confirmDineInOrder,
+  dineInOrderName,
+  markDineInOrderServed,
+  sendDineInOrderToKitchen,
+} from "@/lib/dine-in-orders.firebase";
 import { onOrdersChanged, rejectOrder, type DispatchOrder } from "@/lib/dispatch.functions";
+import { tableDisplayName } from "@/lib/tables.firebase";
+
+type Step = "confirm" | "send" | "serve";
 
 interface DineInActions {
   edit: (orderId: string) => void;
   reject: (orderId: string) => void;
-  confirm: (order: DispatchOrder) => Promise<void>;
-  isConfirming: (orderId: string) => boolean;
+  run: (step: Step, order: DispatchOrder) => Promise<void>;
+  busyWith: (orderId: string) => Step | null;
 }
 
 const ActionsContext = createContext<DineInActions | null>(null);
@@ -44,31 +60,66 @@ export function DineInActionsProvider({ children }: { children: React.ReactNode 
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState<ReadonlyMap<string, Step>>(new Map());
 
-  const confirm = useCallback(
-    async (order: DispatchOrder) => {
-      setConfirming((s) => new Set(s).add(order.id));
+  const run = useCallback(
+    async (step: Step, order: DispatchOrder) => {
+      setBusy((m) => new Map(m).set(order.id, step));
+      const name = dineInOrderName(order);
       try {
-        await confirmDineInOrder({
-          order_id: order.id,
-          // Only what the waiter could see: refuses if a guest added something since.
-          reviewed_line_ids: order.items.map((i) => i.id),
-          actor,
-        });
-        audit({
-          action: "order.dine_in.confirmed",
-          entityType: "order",
-          entityId: order.id,
-          before: { status: order.status },
-          after: { status: "accepted" },
-        });
-        toast.success(`${dineInOrderName(order)} confirmed — sent to the kitchen.`);
+        if (step === "confirm") {
+          await confirmDineInOrder({
+            order_id: order.id,
+            // Only what the waiter could see: refuses if a guest added something since.
+            reviewed_line_ids: order.items.map((i) => i.id),
+            actor,
+          });
+          audit({
+            action: "order.dine_in.confirmed",
+            entityType: "order",
+            entityId: order.id,
+            before: { status: order.status },
+            after: { status: WAITER_CONFIRMED },
+          });
+          toast.success(`${name} confirmed.`, {
+            description: "Send it to the kitchen when the table is ready.",
+          });
+        } else if (step === "send") {
+          await sendDineInOrderToKitchen({ order_id: order.id, actor });
+          audit({
+            action: "order.dine_in.sent_to_kitchen",
+            entityType: "order",
+            entityId: order.id,
+            before: { status: order.status },
+            after: { status: "accepted" },
+          });
+          toast.success(`${name} sent to the kitchen.`);
+        } else {
+          const served = await markDineInOrderServed({ order_id: order.id, actor });
+          audit({
+            action: "order.dine_in.served",
+            entityType: "order",
+            entityId: order.id,
+            before: { status: order.status },
+            after: {
+              status: "delivered",
+              table: served.table_label || null,
+              waiter: served.served_by,
+              served_at: served.served_at,
+            },
+          });
+          toast.success(`${name} served.`);
+        }
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Could not confirm the order.");
+        const fallback = {
+          confirm: "Could not confirm the order.",
+          send: "Could not send the order to the kitchen.",
+          serve: "Could not mark the order served.",
+        }[step];
+        toast.error(e instanceof Error ? e.message : fallback);
       } finally {
-        setConfirming((s) => {
-          const next = new Set(s);
+        setBusy((m) => {
+          const next = new Map(m);
           next.delete(order.id);
           return next;
         });
@@ -81,10 +132,10 @@ export function DineInActionsProvider({ children }: { children: React.ReactNode 
     () => ({
       edit: setEditingId,
       reject: setRejectingId,
-      confirm,
-      isConfirming: (id) => confirming.has(id),
+      run,
+      busyWith: (id) => busy.get(id) ?? null,
     }),
-    [confirm, confirming],
+    [run, busy],
   );
 
   const find = (id: string | null) => (id ? (orders.find((o) => o.id === id) ?? null) : null);
@@ -109,7 +160,7 @@ function useDineInActions(): DineInActions {
   return actions;
 }
 
-/** Edit / Confirm / Reject for a dine-in order — nothing once it's no longer waiting. */
+/** The waiter's next steps for a dine-in order — nothing when there are none. */
 export function DineInOrderActions({
   order,
   compact = false,
@@ -124,8 +175,27 @@ export function DineInOrderActions({
   onAction?: () => void;
 }) {
   const actions = useDineInActions();
-  if (order.order_type !== "dine_in" || !isAwaitingWaiterConfirmation(order.status)) return null;
-  const busy = actions.isConfirming(order.id);
+  if (!hasDineInAction(order)) return null;
+  const busy = actions.busyWith(order.id);
+  const spinner = <Loader2 className="mr-1 size-3.5 animate-spin" />;
+
+  if (order.status === "ready") {
+    return (
+      <div className={`flex flex-wrap gap-2 ${className ?? ""}`}>
+        <Button
+          size="sm"
+          onClick={() => void actions.run("serve", order)}
+          disabled={busy !== null}
+          title={`Served at ${tableDisplayName(order.dine_in?.table_label ?? "—")}`}
+        >
+          {busy === "serve" ? spinner : <ConciergeBell className="mr-1 size-3.5" />}
+          {compact ? "Served" : "Mark as served"}
+        </Button>
+      </div>
+    );
+  }
+
+  const awaiting = isAwaitingWaiterConfirmation(order.status);
   return (
     <div className={`flex flex-wrap gap-2 ${className ?? ""}`}>
       <Button
@@ -135,23 +205,32 @@ export function DineInOrderActions({
           onAction?.();
           actions.edit(order.id);
         }}
-        disabled={busy}
+        disabled={busy !== null}
+        title={awaiting ? undefined : "Changing a confirmed order means confirming it again"}
       >
         <Pencil className="mr-1 size-3.5" /> {compact ? "Edit" : "Edit order"}
       </Button>
-      <Button
-        size="sm"
-        onClick={() => void actions.confirm(order)}
-        disabled={busy || order.items.length === 0}
-        title="Confirm the order and send it to the kitchen"
-      >
-        {busy ? (
-          <Loader2 className="mr-1 size-3.5 animate-spin" />
-        ) : (
-          <ChefHat className="mr-1 size-3.5" />
-        )}
-        {compact ? "Confirm" : "Confirm & send to kitchen"}
-      </Button>
+      {awaiting ? (
+        <Button
+          size="sm"
+          onClick={() => void actions.run("confirm", order)}
+          disabled={busy !== null || order.items.length === 0}
+          title="Confirm the order with the table — it goes to the kitchen when you send it"
+        >
+          {busy === "confirm" ? spinner : <CheckCheck className="mr-1 size-3.5" />}
+          {compact ? "Confirm" : "Confirm order"}
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          onClick={() => void actions.run("send", order)}
+          disabled={busy !== null}
+          title="Send the confirmed order to the kitchen"
+        >
+          {busy === "send" ? spinner : <ChefHat className="mr-1 size-3.5" />}
+          {compact ? "Send" : "Send to kitchen"}
+        </Button>
+      )}
       <Button
         size="sm"
         variant="ghost"
@@ -160,7 +239,7 @@ export function DineInOrderActions({
           onAction?.();
           actions.reject(order.id);
         }}
-        disabled={busy}
+        disabled={busy !== null}
       >
         <Ban className="mr-1 size-3.5" /> Reject
       </Button>
@@ -181,7 +260,7 @@ function RejectDineInOrderDialog({
   useEffect(() => {
     if (open) setReason("");
   }, [open]);
-  const stillWaiting = order ? isAwaitingWaiterConfirmation(order.status) : false;
+  const stillWithWaiter = order ? isWithWaiter(order.status) : false;
 
   async function submit() {
     if (!order) return;
@@ -210,9 +289,9 @@ function RejectDineInOrderDialog({
             from the table start a new order.
           </DialogDescription>
         </DialogHeader>
-        {!stillWaiting && order && (
+        {!stillWithWaiter && order && (
           <p className="rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
-            This order is no longer waiting for confirmation, so it can&apos;t be rejected here.
+            This order has already gone to the kitchen, so it can&apos;t be rejected here.
           </p>
         )}
         <div className="space-y-1.5">
@@ -232,7 +311,7 @@ function RejectDineInOrderDialog({
           <Button
             variant="destructive"
             onClick={() => void submit()}
-            disabled={!reason.trim() || busy || !stillWaiting}
+            disabled={!reason.trim() || busy || !stillWithWaiter}
           >
             {busy ? (
               <Loader2 className="mr-1.5 size-4 animate-spin" />

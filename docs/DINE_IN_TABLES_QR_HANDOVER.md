@@ -7,9 +7,11 @@
 > `src/lib/dine-in-order-edit.ts`, `src/lib/dine-in-orders.firebase.ts`,
 > `src/lib/waiter-requests.firebase.ts`, `src/lib/table-overview.ts`, `firestore.rules`.
 > Snapshot as of **2026-09-27**.
-> **Status:** the admin side is live — table configuration, QR codes, seatings, the Dine-in
-> orders view with waiter requests and waiter confirmation/editing, and the Table overview. The
-> **customer ordering flow is not built yet**. This doc is the contract it must follow.
+> **Status:** the admin side is live. That covers table configuration, QR codes, seatings,
+> waiter requests, the Table overview, and the Dine-in orders view, where a waiter edits an order
+> (with edit history), confirms it, sends it to the kitchen and marks it served, and gets an
+> "Order Ready" alert. The **customer ordering flow is not built yet**. This doc is the contract it
+> must follow.
 
 ---
 
@@ -162,7 +164,7 @@ treated the same way.
 
 | Mode | Where a guest's items go |
 | --- | --- |
-| `single` | Into the **table's current order** while it is waiting for confirmation, whoever started it. Once a waiter has confirmed it (it has gone to the kitchen), or it was rejected or cancelled, the next items start the table's **next** order (`dine_in.round` 2, 3…) in the same seating. Everyone then adds to that one, and it waits for confirmation in turn. A single-order table never has two orders waiting for confirmation at once. |
+| `single` | Into the **table's current order** while it is waiting for confirmation, whoever started it. Once a waiter has confirmed it (even before it's sent to the kitchen), or it was rejected or cancelled, the next items start the table's **next** order (`dine_in.round` 2, 3…) in the same seating. Everyone then adds to that one, and it waits for confirmation in turn. A single-order table never has two orders waiting for confirmation at once. |
 | `multiple` | Into **this guest's own** order while it waits for confirmation, or a new order for them. **Never into another guest's order.** Each order has its own status, kitchen progress and bill. |
 
 **A guest's items never reach the kitchen without a waiter confirming them.** In single mode a
@@ -180,7 +182,8 @@ seating's bill is therefore the sum of its rounds.
 3. **Lock the table for the visit.** Keep the token (not a table id) and pass it to every
    placement. Offer no "change table" control. Moving tables means scanning the other table's code.
 4. Place orders only through the §3 logic. Never write order documents or the table's `session`
-   directly. After placing, show the order as **waiting for the waiter to confirm it**.
+   directly. After placing, show the order as **waiting for the waiter to confirm it**, then follow
+   its `status` with the labels in §5 (Confirmed → Sent to kitchen → Preparing → Ready → Served).
 5. **Request waiter:** call `requestWaiter({ table: { token }, guest, message? })` from
    `src/lib/waiter-requests.firebase.ts`. It is one transaction: it joins the guest to the seating
    (starting one if nobody has ordered yet, exactly as ordering would) and creates or re-presses
@@ -190,9 +193,10 @@ seating's bill is therefore the sum of its rounds.
 
 ## 5. Dine-in orders — `orders/{orderId}`
 
-A dine-in order is a normal order record, with **one dine-in-only status**:
-`waiting_for_waiter_confirmation` (the constant `WAITING_FOR_WAITER_CONFIRMATION` in `dine-in.ts`).
-The console refuses that status on delivery and pickup orders. It has `order_type: "dine_in"` plus:
+A dine-in order is a normal order record, with **two dine-in-only statuses**:
+`waiting_for_waiter_confirmation` and `waiter_confirmed` (the constants
+`WAITING_FOR_WAITER_CONFIRMATION` and `WAITER_CONFIRMED` in `dine-in.ts`). The console refuses both
+on delivery and pickup orders. It has `order_type: "dine_in"` plus:
 
 ```ts
 dine_in: {
@@ -206,16 +210,21 @@ dine_in: {
   contributors: {                    // everyone who added items, keyed by guest id
     [guestId: string]: { label: string; first_added_at: string; item_count: number };
   };
-  waiter_id: string | null;          // set to the confirming waiter unless already set
+  waiter_id: string | null;          // set to the first waiter who confirms or serves it
   waiter_name: string | null;
-  confirmed_at: string | null;       // when a waiter confirmed it and sent it to the kitchen
-  confirmed_by: string | null;       // that waiter's name
+  confirmed_at: string | null;       // a waiter confirmed it with the table
+  confirmed_by: string | null;       //   … that waiter's name
+  sent_to_kitchen_at: string | null; // a waiter sent it to the kitchen
+  sent_to_kitchen_by: string | null;
+  served_at: string | null;          // a waiter served it at the table
+  served_by: string | null;          //   … that waiter's name
+  served_by_id: string | null;       //   … and staff id
 }
 ```
 
 - Each line in `items` records who added it and when: `added_by: { guest_id, label }` and `added_at`.
   A line a waiter added has `added_by: null` and `added_by_staff: "<name>"`. A line a waiter changed
-  has `edited_at` / `edited_by`.
+  has `edited_at` / `edited_by`, and the change is recorded in `edits` (§6.2).
 - **Sizes, add-ons and modifiers** (`dine-in-order-edit.ts`): the size is `variant`, and every
   extra is an entry in `addons`. A choice from a menu modifier group is an addon with
   `id: "mod:{modifierId}:{choiceIndex}"` and `name: "{Group}: {Choice}"`, e.g. `"Cooking: Medium"`.
@@ -226,51 +235,154 @@ dine_in: {
 - `customer_name` is the guest's label (multiple) or the table's name, e.g. "Table 10" (single).
 - `delivery_address` is `null`, `delivery_fee` is `0` and there are no `driver_*` values.
 
-**Lifecycle:** `waiting_for_waiter_confirmation` (shown as "Waiting for waiter confirmation") →
-`accepted` ("Confirmed", now on the kitchen board) → `preparing` → `ready` → `delivered` ("Served").
-From waiting, an order can also be `rejected` (with a reason). `cancelled` and `refunded` work as
-for any other order. The console refuses `assigned`, `picked_up` and `on_the_way`, and refuses
-driver assignment, for dine-in orders. They never appear on the Dispatch board. The Kitchen board
-only shows `accepted`, `preparing` and `ready`.
+**Lifecycle** (labels from `DINE_IN_STATUS_LABEL`):
+
+| `status` | Shown as | What happens next |
+| --- | --- | --- |
+| `waiting_for_waiter_confirmation` | Waiting for waiter confirmation | The waiter reviews and may edit it, then **Confirm order**. Guests can still add to it. |
+| `waiter_confirmed` | Confirmed — not sent yet | Guests can't add to it any more. The waiter **Sends it to the kitchen**. |
+| `accepted` | Sent to kitchen | The first column of the kitchen board. |
+| `preparing` | Preparing | The kitchen marks it ready, and waiters get a **🔔 Order Ready** alert. |
+| `ready` | Ready | The waiter takes it to the table and taps **Mark as served**. |
+| `delivered` | Served | Done. |
+
+**An unconfirmed order never reaches the kitchen.** Only the waiter actions in §6 move an order
+into `waiter_confirmed`, `accepted` or `delivered`. `setFirebaseOrderStatus()` refuses those three
+for dine-in orders, and refuses `preparing`/`ready` for an order that hasn't been sent. The
+kitchen board also checks `dine_in.confirmed_at` before it shows a dine-in order. Whichever app
+writes the order, `firestore.rules` refuses any write that puts a dine-in order in `accepted`,
+`preparing`, `ready` or `delivered` without `dine_in.confirmed_at`.
+
+An order that is waiting or confirmed can also be `rejected`, with a reason. `cancelled` and
+`refunded` work as for any other order. The console refuses `assigned`, `picked_up` and
+`on_the_way` for dine-in orders, and refuses driver assignment. They never appear on the Dispatch
+board.
 
 **Where they show up in the console:**
 
-- Operations → **Dine-in orders** (`/dine-in`) is the waiter's screen. It shows live **waiter
-  requests** (🔔 Waiter Request / Table 12 / Customer needs assistance, with **Accept** and
-  **Resolve**) and the orders **waiting for waiter confirmation** (Table 12 / Order FF-123456, with
-  **Edit order**, **Confirm & send to kitchen** and **Reject**). Below them is every dine-in order;
-  selecting one opens its items, modifiers, notes and history. A toast pops up when a guest calls.
-- Operations → **Table overview** (`/tables`) shows each table live: capacity, mode, active orders,
-  any open waiter requests (with Accept/Resolve), and whether it's Occupied, Available or Inactive.
-  A table with an open call from its current seating counts as Occupied, even before anyone orders.
-- The **Orders** page has a "Dine-in — waiting for waiter confirmation" column with the same Edit /
-  Confirm / Reject actions. The Kitchen page works as for any other order, and its tickets now list
-  each line's modifiers.
+- Operations → **Dine-in orders** (`/dine-in`) is the waiter's screen. It shows three live
+  queues:
+  - **waiter requests**;
+  - orders **ready to serve**, with **Mark as served**;
+  - orders still with the waiter, with **Edit order**, **Confirm order** or **Send to kitchen**,
+    and **Reject**.
 
-## 6. Waiter confirmation and order editing — `src/lib/dine-in-orders.firebase.ts`
+  Below the queues is every dine-in order. Selecting one opens its items, modifiers and notes,
+  who confirmed, sent and served it, its **edit history** and its timeline.
+  `/dine-in?order={orderId}` opens an order directly.
+- **🔔 Order Ready:** on every console page, a toast appears the moment the kitchen marks a
+  dine-in order ready. It reads *Order Ready · Table 12 · Order #FF-123456 · [View Order]*. It
+  stays until someone dismisses or views it, and goes by itself once the order is served. Orders
+  that were already ready when the console opened raise no alert; they're listed under "Ready to
+  serve".
+- Operations → **Table overview** (`/tables`) shows each table live:
+  - capacity, mode and active orders;
+  - open waiter requests;
+  - whether it's Occupied, Available or Inactive;
+  - its **service**: *Ready to serve* (with Mark as served), *Waiting for the waiter*, *In the
+    kitchen* or *All served*.
 
-Both actions run as one Firestore transaction on the order.
+  A table stays Occupied after everything is served, until staff clear it.
+- The **Orders** page has a "Dine-in — with the waiter" column with the same actions, and Mark as
+  served on ready dine-in orders. Its Accept button never applies to dine-in orders. Kitchen
+  tickets show the table and each line's modifiers.
 
-- **`confirmDineInOrder({ order_id, reviewed_line_ids?, actor })`** moves a waiting order to
-  `accepted` and sets `accepted_at`, `dine_in.confirmed_at` / `confirmed_by`, and the waiter if
-  none is set. It refuses an order that isn't waiting, or one with no items. With
-  `reviewed_line_ids` (the lines the waiter was shown) it refuses with `dine-in/order-changed` if
-  a guest has added anything since, so the kitchen never gets items no waiter has seen. Only one
-  waiter's confirm can succeed.
-- **`editDineInOrder({ order_id, base_line_ids, lines, special_instructions?, note?, actor })`**
-  works only while the order is waiting for confirmation, and refuses once it has gone to the
-  kitchen (`dine-in/order-locked`). The waiter can:
-  - add items, remove items and change quantities;
-  - add, remove and change modifiers, add-ons and the size;
-  - change each item's note (the kitchen sees it) and the order's special instructions;
-  - add a note to the order's history (staff only).
+## 6. Waiter actions — `src/lib/dine-in-orders.firebase.ts`
 
-  An existing line keeps its guest, name and price. Totals and each guest's `item_count` are
-  recalculated, and the changes are written to the order's history ("Edited by Sam: Burger: ×1 →
-  ×2; Added Salad ×1"). Lines a guest added while the waiter was editing (not in
-  `base_line_ids`) are kept. The edit refuses (`dine-in/order-changed`) rather than overwrite
-  special instructions someone else changed meanwhile. An order can't be edited down to no items;
-  reject it instead.
+Each action runs as one Firestore transaction on the order, records who took it, and adds a line
+to the order's `timeline`. Each refuses with `dine-in/order-locked` when the order isn't at its
+step.
+
+### 6.1 Confirm, send to kitchen, serve
+
+- **`confirmDineInOrder({ order_id, reviewed_line_ids?, actor })`** moves the order from
+  `waiting_for_waiter_confirmation` to `waiter_confirmed`.
+  - Sets `dine_in.confirmed_at` / `confirmed_by`, and the waiter if none is set.
+  - Refuses an order with no items.
+  - Pass `reviewed_line_ids`, the lines the waiter was shown. If a guest has added anything since,
+    it refuses with `dine-in/order-changed`, so a waiter never confirms items they haven't seen.
+  - Only one waiter's confirm can succeed. From here on, guests can't add to the order.
+- **`sendDineInOrderToKitchen({ order_id, actor })`** moves the order from `waiter_confirmed` to
+  `accepted`. It sets `accepted_at` and `dine_in.sent_to_kitchen_at` / `sent_to_kitchen_by`, and
+  refuses unless the order has been confirmed.
+- **`markDineInOrderServed({ order_id, actor })`** moves the order from `ready` to `delivered`.
+  - Sets `delivered_at` and `dine_in.served_at` / `served_by` / `served_by_id`, plus the waiter if
+    none is set.
+  - Returns `{ order_id, order_number, table_label, served_at, served_by }`.
+  - The timeline reads "Served at Table 12 by John".
+
+### 6.2 Editing, and the edit history
+
+**`editDineInOrder({ order_id, base_line_ids, lines, special_instructions?, note?, actor })`**
+works while the order is with the waiter (waiting or confirmed). It refuses once the order has
+been sent to the kitchen. The waiter can:
+
+- add items, remove items and change quantities;
+- add, remove and change modifiers, add-ons and the size;
+- change each item's note (the kitchen sees it) and the order's special instructions;
+- add a note to the order's history (staff only).
+
+How an edit is applied:
+
+- An existing line keeps its guest, name and price.
+- Totals and each guest's `item_count` are recalculated.
+- Lines a guest added while the waiter was editing (not in `base_line_ids`) are kept.
+- The edit refuses with `dine-in/order-changed` rather than overwrite special instructions that
+  someone else changed meanwhile.
+- An order can't be edited down to no items. Reject it instead.
+- **Changing a confirmed order withdraws the confirmation.** It goes back to
+  `waiting_for_waiter_confirmation`, and must be confirmed again before it can be sent. A note on
+  its own doesn't count as a change.
+
+**The customer's original order is never overwritten without a record.** Every save that changes
+the order adds one entry to `edits`. That's a map on the order keyed by edit id;
+`normalizeOrderEdits()` reads it back oldest first.
+
+```ts
+edits: {
+  [editId: string]: {
+    id: string;
+    at: string;                        // when
+    by: string;                        // the waiter's name ("Edited by: John")
+    by_id: string | null;
+    status_before: string;             // e.g. "waiter_confirmed"
+    summary: string;                   // "Steak: Mushroom Sauce removed" — also in the timeline
+    lines: {                           // one per line changed
+      line_id: string;
+      kind: "added" | "removed" | "changed";
+      item_name: string;               // "Steak"
+      original: string | null;         // "Steak + Mushroom Sauce" (null for a line the waiter added)
+      updated: string | null;          // "Steak" (null when removed)
+      changes: string[];               // ["Mushroom Sauce removed"]
+      before: OrderLine | null;        // the line exactly as it was
+      after: OrderLine | null;         // …and as it became
+    }[];
+    special_instructions: { from: string | null; to: string | null } | null;
+    total_before: number;
+    total_after: number;
+    confirmation_withdrawn: boolean;   // it had been confirmed; this edit meant confirming again
+  };
+}
+```
+
+Changes are worded like this: "Mushroom Sauce removed", "Extra cheese ×1 → ×2", "Cooking: Rare →
+Medium", "size Regular → Large", `note "No onions"`, "Removed Chips ×1" and "Added Salad ×1".
+The console shows each changed line as *Order #FF-123456 · Original: Steak + Mushroom Sauce ·
+Edited by: John · Change: Mushroom Sauce removed · Time: 18:47*.
+
+The kitchen only ever sees the order's current `items`, and only after the order has been
+confirmed and sent. So it receives the final confirmed order and nothing else.
+
+### 6.3 Order Ready alerts
+
+`readyOrderAlerts(seen, orders)` in `dine-in.ts` is the rule the console's alert follows:
+
+- one alert for each dine-in order that has become `ready` since the last snapshot (`seen`);
+- no alerts on the first snapshot;
+- a `cleared` list of orders that are no longer ready.
+
+The Restaurant Admin app should raise the same alert from the same data. Nothing extra is written
+to the database; the alert is worked out from the live order book.
 
 ---
 
@@ -291,8 +403,15 @@ Both actions run as one Firestore transaction on the order.
 
   Alternatively, run `placeDineInOrder()` and `requestWaiter()` server-side (Cloud Functions) and
   keep guests out of direct writes.
-- **Restaurant Admin app:** it must recognise `waiting_for_waiter_confirmation` (label "Waiting
-  for waiter confirmation", not a kitchen status) and `waiterRequests`, if it shows dine-in orders.
-- Waiter assignment beyond confirmation. Confirming sets the waiter when none is set; there's no
-  "reassign waiter" action, and accepting a waiter request doesn't assign one.
-- A staff "Mark served" action (`ready` → `delivered`) for dine-in orders.
+- **Deploying the rules.** The `dineInConfirmedBeforeKitchen()` check in `firestore.rules` only
+  applies once the rules are deployed (`firebase deploy --only firestore:rules`).
+- **Restaurant Admin app.** If it shows dine-in orders, it must:
+  - recognise `waiting_for_waiter_confirmation` and `waiter_confirmed` (neither is a kitchen
+    status);
+  - use the §6 actions rather than writing `status` itself;
+  - show the Order Ready alert (§6.3) and `waiterRequests`.
+- **Waiter assignment** is limited to confirming and serving: the first waiter to confirm or serve
+  an order becomes its waiter.
+  - There's no "reassign waiter" action.
+  - Order Ready alerts go to every member of staff who can see orders, not only the order's waiter.
+  - Accepting a waiter request doesn't assign a waiter.

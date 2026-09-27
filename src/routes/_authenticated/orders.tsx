@@ -97,7 +97,7 @@ import { subscribeAllBranches, type RestaurantBranch } from "@/lib/branches.fire
 import { useDriverFleet, type DriverRow } from "@/hooks/use-driver-fleet";
 import { listOrdersAwaitingPaymentApproval } from "@/lib/payments.firebase";
 import { tableDisplayName } from "@/lib/tables.firebase";
-import { isAwaitingWaiterConfirmation } from "@/lib/dine-in";
+import { hasDineInAction, isWithWaiter } from "@/lib/dine-in";
 
 export const Route = createFileRoute("/_authenticated/orders")({
   head: () => ({
@@ -136,6 +136,7 @@ function OrdersPage() {
 const STATUSES: OrderStatus[] = [
   "pending",
   "waiting_for_waiter_confirmation",
+  "waiter_confirmed",
   "accepted",
   "preparing",
   "ready",
@@ -151,6 +152,7 @@ const STATUSES: OrderStatus[] = [
 const STAGE_TONE: Record<OrderStage, string> = {
   pending: "bg-slate-500/15 text-slate-300 border-slate-500/30",
   waiting_for_waiter_confirmation: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
+  waiter_confirmed: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   accepted: "bg-violet-500/15 text-violet-300 border-violet-500/30",
   preparing: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   ready: "bg-amber-500/15 text-amber-400 border-amber-500/25",
@@ -169,8 +171,9 @@ const STAGE_TONE: Record<OrderStage, string> = {
 
 // Pipeline stage rules (see docs/ORDER_WORKFLOW_HANDOVER.md):
 //  - pending              → only Accept / Reject
-//  - waiting_for_waiter_confirmation (dine-in) → Edit / Confirm & send to
-//                           kitchen / Reject — see DineInOrderActions
+//  - waiting_for_waiter_confirmation (dine-in) → Edit / Confirm order / Reject
+//  - waiter_confirmed (dine-in) → Edit / Send to kitchen / Reject
+//  - ready (dine-in)      → Mark as served — all three in DineInOrderActions
 //  - accepted             → kitchen picks up
 //  - preparing            → kitchen marks ready
 //  - unassigned           → dispatch assigns a driver (`driver_id` only —
@@ -819,7 +822,7 @@ function OrdersTable({
                 <TableCell className="text-right tabular-nums">{money(order.total)}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex flex-wrap justify-end gap-1">
-                    {canManage && awaitingWaiter && (
+                    {canManage && hasDineInAction(order) && (
                       <DineInOrderActions order={order} compact className="justify-end gap-1" />
                     )}
                     {canManage && isIncoming && (
@@ -919,7 +922,7 @@ const CARD_GROUPS: { key: CardGroupKey; label: string; tone: string; icon: typeo
   { key: "incoming", label: "Incoming (new)", tone: "text-slate-300", icon: Inbox },
   {
     key: "waiting_for_waiter_confirmation",
-    label: "Dine-in — waiting for waiter confirmation",
+    label: "Dine-in — with the waiter (confirm & send to kitchen)",
     tone: "text-fuchsia-300",
     icon: ConciergeBell,
   },
@@ -1222,7 +1225,7 @@ function OrderCard({
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {canManage && awaitingWaiter && <DineInOrderActions order={order} compact />}
+        {canManage && hasDineInAction(order) && <DineInOrderActions order={order} compact />}
         {canManage && isIncoming && (
           <>
             {awaitingPayment ? (
@@ -1305,9 +1308,9 @@ function OrderCard({
   );
 }
 
-/** A dine-in order a waiter still has to confirm (it isn't in the kitchen yet). */
+/** A dine-in order still with the waiter — not confirmed, or not yet sent to the kitchen. */
 function isWaitingForWaiter(order: DispatchOrder): boolean {
-  return order.order_type === "dine_in" && isAwaitingWaiterConfirmation(order.status);
+  return order.order_type === "dine_in" && isWithWaiter(order.status);
 }
 
 function orderHasNotes(order: DispatchOrder): boolean {

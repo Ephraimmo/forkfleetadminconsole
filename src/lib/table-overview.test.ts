@@ -83,6 +83,11 @@ function order(
       waiter_name: null,
       confirmed_at: null,
       confirmed_by: null,
+      sent_to_kitchen_at: null,
+      sent_to_kitchen_by: null,
+      served_at: null,
+      served_by: null,
+      served_by_id: null,
     },
     items: (overrides.items ?? [["Dish", 1]]).map(([item_name, quantity]) => ({
       item_name,

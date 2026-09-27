@@ -3,12 +3,15 @@
 //
 // A dine-in order is an ordinary /orders/{orderId} record with
 // `order_type: "dine_in"` plus a `dine_in` block (DineInOrderInfo below). It
-// uses the shared `status` values plus one of its own:
-//   waiting_for_waiter_confirmation -> accepted ("Confirmed", now on the
-//   kitchen board) -> preparing -> ready -> delivered (read as "Served")
+// uses the shared `status` values plus two of its own:
+//   waiting_for_waiter_confirmation -> waiter_confirmed -> accepted ("Sent to
+//   kitchen", now on the kitchen board) -> preparing -> ready -> delivered
+//   (read as "Served")
 // A guest's order never reaches the kitchen by itself: a waiter reviews it,
-// may edit it, and confirms it (dine-in-orders.firebase.ts). It never involves
-// a driver or the dispatch board. See docs/DINE_IN_TABLES_QR_HANDOVER.md.
+// may edit it, confirms it with the table, and sends it to the kitchen, then
+// serves it once the kitchen marks it ready (dine-in-orders.firebase.ts). It
+// never involves a driver or the dispatch board. See
+// docs/DINE_IN_TABLES_QR_HANDOVER.md.
 
 import type { OrderStatus } from "@/lib/orders.firebase";
 import { resolveOrderMode, tableLabelKey, type TableOrderMode } from "@/lib/tables.firebase";
@@ -17,6 +20,9 @@ import { resolveOrderMode, tableLabelKey, type TableOrderMode } from "@/lib/tabl
 export const WAITING_FOR_WAITER_CONFIRMATION =
   "waiting_for_waiter_confirmation" satisfies OrderStatus;
 
+/** A waiter has confirmed the order with the table; it goes to the kitchen when they send it. */
+export const WAITER_CONFIRMED = "waiter_confirmed" satisfies OrderStatus;
+
 /**
  * Whether a dine-in order is still waiting for a waiter to confirm it (and so
  * can be edited). Dine-in orders placed before the waiter step existed were
@@ -24,6 +30,15 @@ export const WAITING_FOR_WAITER_CONFIRMATION =
  */
 export function isAwaitingWaiterConfirmation(status: string): boolean {
   return status === WAITING_FOR_WAITER_CONFIRMATION || status === "pending";
+}
+
+/**
+ * Whether a dine-in order is still with the waiter — waiting for confirmation,
+ * or confirmed but not yet sent. It can be edited and rejected, and it is not
+ * in front of the kitchen.
+ */
+export function isWithWaiter(status: string): boolean {
+  return isAwaitingWaiterConfirmation(status) || status === WAITER_CONFIRMED;
 }
 
 export type DineInErrorCode =
@@ -57,6 +72,11 @@ export function staffActorLabel(actor: StaffActor | null | undefined): string {
   return (actor?.name ?? "").trim() || (actor?.email ?? "").trim() || "Staff";
 }
 
+/** Whether a waiter has something to do on this order right now: confirm it, send it, or serve it. */
+export function hasDineInAction(order: { order_type: string; status: string }): boolean {
+  return order.order_type === "dine_in" && (isWithWaiter(order.status) || order.status === "ready");
+}
+
 /**
  * `orders/{id}.dine_in` — written by placeDineInOrder() (table-sessions.firebase.ts).
  *
@@ -83,9 +103,17 @@ export interface DineInOrderInfo {
   contributors: DineInContributor[];
   waiter_id: string | null;
   waiter_name: string | null;
-  /** When a waiter confirmed the order and sent it to the kitchen, and who. */
+  /** When a waiter confirmed the order with the table, and who. */
   confirmed_at: string | null;
   confirmed_by: string | null;
+  /** When a waiter sent the confirmed order to the kitchen, and who. (Orders
+   *  confirmed before these were separate steps have only `confirmed_*`.) */
+  sent_to_kitchen_at: string | null;
+  sent_to_kitchen_by: string | null;
+  /** When the order was served at the table, and by which waiter. */
+  served_at: string | null;
+  served_by: string | null;
+  served_by_id: string | null;
 }
 
 export interface DineInContributor {
@@ -119,6 +147,11 @@ export function normalizeDineIn(raw: unknown): DineInOrderInfo | null {
     waiter_name: str(r["waiter_name"]) || null,
     confirmed_at: str(r["confirmed_at"]) || null,
     confirmed_by: str(r["confirmed_by"]) || null,
+    sent_to_kitchen_at: str(r["sent_to_kitchen_at"]) || null,
+    sent_to_kitchen_by: str(r["sent_to_kitchen_by"]) || null,
+    served_at: str(r["served_at"]) || null,
+    served_by: str(r["served_by"]) || null,
+    served_by_id: str(r["served_by_id"]) || null,
   };
 }
 
@@ -145,7 +178,8 @@ export const DINE_IN_STATUS_LABEL: Record<OrderStatus, string> = {
   waiting_for_waiter_confirmation: "Waiting for waiter confirmation",
   // Legacy dine-in orders written before the waiter step (see isAwaitingWaiterConfirmation).
   pending: "Waiting for waiter confirmation",
-  accepted: "Confirmed",
+  waiter_confirmed: "Confirmed — not sent yet",
+  accepted: "Sent to kitchen",
   preparing: "Preparing",
   ready: "Ready",
   assigned: "Assigned",
@@ -161,6 +195,7 @@ export const DINE_IN_STATUS_LABEL: Record<OrderStatus, string> = {
 export const OPEN_DINE_IN_STATUSES: OrderStatus[] = [
   WAITING_FOR_WAITER_CONFIRMATION,
   "pending",
+  WAITER_CONFIRMED,
   "accepted",
   "preparing",
   "ready",
@@ -253,4 +288,24 @@ export function filterDineInOrders<T extends FilterableOrder>(
         (o.dine_in?.contributors ?? []).some((c) => c.label.toLowerCase().includes(search)),
     )
     .sort((a, b) => (b.created_at || b.placed_at).localeCompare(a.created_at || a.placed_at));
+}
+
+/**
+ * "Order Ready" alerts for waiters: which dine-in orders the kitchen has just
+ * marked ready, given the ids that were already ready last time (`seen`).
+ * The first look (`seen` null) only takes stock — orders already ready then
+ * were ready before anyone was watching, and raise no alert. `cleared` lists
+ * orders that are no longer ready (served, or taken back), whose alert can go.
+ */
+export function readyOrderAlerts<T extends { id: string; order_type: string; status: string }>(
+  seen: ReadonlySet<string> | null,
+  orders: T[],
+): { ready: Set<string>; alerts: T[]; cleared: string[] } {
+  const readyOrders = orders.filter((o) => o.order_type === "dine_in" && o.status === "ready");
+  const ready = new Set(readyOrders.map((o) => o.id));
+  return {
+    ready,
+    alerts: seen === null ? [] : readyOrders.filter((o) => !seen.has(o.id)),
+    cleared: seen === null ? [] : [...seen].filter((id) => !ready.has(id)),
+  };
 }

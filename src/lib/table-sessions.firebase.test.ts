@@ -6,8 +6,12 @@ vi.mock("@/lib/firestore", async (importOriginal) =>
 );
 
 import { fakeDb as db } from "@/lib/testing/fake-firestore";
-import { normalizeDineIn, WAITING_FOR_WAITER_CONFIRMATION } from "@/lib/dine-in";
-import { confirmDineInOrder } from "@/lib/dine-in-orders.firebase";
+import { normalizeDineIn, WAITER_CONFIRMED, WAITING_FOR_WAITER_CONFIRMATION } from "@/lib/dine-in";
+import {
+  confirmDineInOrder,
+  markDineInOrderServed,
+  sendDineInOrderToKitchen,
+} from "@/lib/dine-in-orders.firebase";
 import {
   rejectFirebaseOrder,
   setFirebaseOrderStatus,
@@ -65,7 +69,17 @@ const lineItems = (order: Doc) =>
     .map((l) => `${l["name"]} ×${l["quantity"]}`)
     .sort();
 const WAITER = { id: "staff_sam", email: "sam@nonna.test", name: "Sam" };
-const confirm = (orderId: string) => confirmDineInOrder({ order_id: orderId, actor: WAITER });
+/** A waiter confirms the order with the table, then sends it to the kitchen. */
+const confirmAndSend = async (orderId: string) => {
+  await confirmDineInOrder({ order_id: orderId, actor: WAITER });
+  await sendDineInOrderToKitchen({ order_id: orderId, actor: WAITER });
+};
+/** …and the kitchen cooks it until it's ready. */
+const cookUntilReady = async (orderId: string) => {
+  await confirmAndSend(orderId);
+  await setFirebaseOrderStatus({ orderId, status: "preparing" });
+  await setFirebaseOrderStatus({ orderId, status: "ready" });
+};
 /** Orders at the table still taking guests' items: waiting for a waiter to confirm them. */
 const waitingOrdersAt = (table: RestaurantTable) =>
   ordersAt(table).filter((o) => o["status"] === WAITING_FOR_WAITER_CONFIRMATION);
@@ -126,7 +140,7 @@ describe("Task 5 — multiple orders on one table", () => {
     const a = await place(table, 1, [item("Steak")]);
     const b = await place(table, 2, [item("Burger")]);
 
-    await confirm(a.order_id);
+    await confirmAndSend(a.order_id);
     await setFirebaseOrderStatus({ orderId: a.order_id, status: "preparing" });
 
     expect(orderDoc(a.order_id)["status"]).toBe("preparing");
@@ -137,7 +151,7 @@ describe("Task 5 — multiple orders on one table", () => {
     const table = await addTable("12", "multiple");
     const first = await place(table, 1, [item("Steak")]);
     const other = await place(table, 2, [item("Burger")]);
-    await setFirebaseOrderStatus({ orderId: first.order_id, status: "ready" });
+    await cookUntilReady(first.order_id);
 
     const next = await place(table, 1, [item("Ice cream")]);
 
@@ -252,7 +266,7 @@ describe("Task 6 — single order per table", () => {
   it("Task 9: once a waiter has sent the table order to the kitchen, later items wait in the table's next order", async () => {
     const table = await addTable("10", "single");
     const first = await place(table, 1, [item("Steak")]);
-    await confirm(first.order_id);
+    await confirmAndSend(first.order_id);
     await setFirebaseOrderStatus({ orderId: first.order_id, status: "preparing" });
 
     const late = await place(table, 2, [item("Coke")]);
@@ -272,7 +286,7 @@ describe("Task 6 — single order per table", () => {
   it("regression: after the kitchen finishes the table order, the next items start one new order — never two open at once", async () => {
     const table = await addTable("10", "single");
     const first = await place(table, 1, [item("Steak")]);
-    await setFirebaseOrderStatus({ orderId: first.order_id, status: "ready" });
+    await cookUntilReady(first.order_id);
 
     const dessert = await Promise.all([
       place(table, 2, [item("Ice cream")]),
@@ -343,7 +357,7 @@ describe("Task 6 — single order per table", () => {
     const first = await place(table, 1, [item("Steak")]);
     const reviewed = Object.keys(orderDoc(first.order_id)["items"]);
 
-    const race = slipInAddition(table, first.order_id, "accepted");
+    const race = slipInAddition(table, first.order_id, WAITER_CONFIRMED);
     await expect(
       confirmDineInOrder({ order_id: first.order_id, reviewed_line_ids: reviewed, actor: WAITER }),
     ).rejects.toMatchObject({ code: "dine-in/order-changed" });
@@ -555,7 +569,8 @@ describe("Task 7 — the table overview reflects placed orders", () => {
     ]);
     expect(first.t3.status).toBe("available");
 
-    await setFirebaseOrderStatus({ orderId: a.order_id, status: "delivered" });
+    await cookUntilReady(a.order_id);
+    await markDineInOrderServed({ order_id: a.order_id, actor: WAITER });
     ({ t10, t12 } = await overview());
     expect(t12.active_orders).toHaveLength(2);
     expect(t12.status).toBe("occupied");

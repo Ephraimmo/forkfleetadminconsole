@@ -41,6 +41,7 @@ import { useStaffSession } from "@/hooks/use-staff-session";
 import { useInAppAlerts } from "@/hooks/use-in-app-alerts";
 import { signOutDemo, isDemoSignedIn } from "@/lib/session.functions";
 import { useFirebaseOrderSync } from "@/hooks/use-firebase-orders";
+import { useOrderReadyAlerts } from "@/hooks/use-order-ready-alerts";
 
 const roleLabel = (role: string) => role.replace(/_/g, " ");
 const severityTone: Record<string, string> = {
@@ -120,6 +121,8 @@ export function AppShell({
   const staff = useStaffSession();
   const session = staff.session;
   useFirebaseOrderSync();
+  // "🔔 Order Ready" toasts for waiters, on every page.
+  useOrderReadyAlerts(staff.hasAnyPermission(["orders.view", "orders.manage"]));
 
   // Redirect to /auth if we're definitely signed out (only after the query settles)
   useEffect(() => {

@@ -9,8 +9,9 @@
 // guest's items go:
 //   - "single":   the table has one shared order. Every guest's items join the
 //                 table's current order while it is still waiting for a waiter
-//                 to confirm it. Once a waiter has confirmed it (it's gone to
-//                 the kitchen) — or it was rejected or cancelled — the next
+//                 to confirm it. Once a waiter has confirmed it with the table
+//                 (and then sent it to the kitchen) — or it was rejected or
+//                 cancelled — the next
 //                 items start the table's next order (round 2, 3…), which waits
 //                 for confirmation in turn. So a single-order table never has
 //                 two orders waiting for confirmation at once.
@@ -19,7 +20,8 @@
 //                 never anyone else's.
 //
 // Every order starts as "waiting_for_waiter_confirmation" and never enters the
-// kitchen by itself: a waiter confirms it (dine-in-orders.firebase.ts).
+// kitchen by itself: a waiter confirms it with the table, then sends it to the
+// kitchen (dine-in-orders.firebase.ts).
 //
 // placeDineInOrder() is the one way to place a dine-in order. It runs as a
 // Firestore transaction, so guests ordering at the same moment can't create
@@ -65,8 +67,9 @@ export type { DineInItemInput } from "@/lib/dine-in-order-edit";
 
 /**
  * Statuses in which an order still takes a guest's new items: waiting for a
- * waiter to confirm it (legacy dine-in orders wait as "pending"). Once
- * confirmed it's in the kitchen, and the guest's next items start a new order.
+ * waiter to confirm it (legacy dine-in orders wait as "pending"). Once a
+ * waiter has confirmed it with the table it takes nothing more, even before it
+ * goes to the kitchen, and the guest's next items start a new order.
  */
 export const ADDABLE_STATUSES: OrderStatus[] = [WAITING_FOR_WAITER_CONFIRMATION, "pending"];
 

@@ -8,6 +8,7 @@ const STATUS_TONE: Partial<Record<OrderStatus, string>> = {
   waiting_for_waiter_confirmation: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
   // Legacy dine-in orders wait for the waiter as "pending".
   pending: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
+  waiter_confirmed: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   accepted: "bg-violet-500/15 text-violet-300 border-violet-500/30",
   preparing: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   ready: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",

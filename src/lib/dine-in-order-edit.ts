@@ -282,6 +282,46 @@ export interface AppliedOrderEdit {
   special_instructions: string | null;
   /** What changed, in words, for the order's history. Empty when nothing did. */
   changes: string[];
+  /** The same changes line by line, with each line as it was before and after. */
+  line_changes: OrderEditLineChange[];
+}
+
+/**
+ * One line a waiter changed, as kept in the order's edit history. The line is
+ * stored exactly as it was and as it became, so the customer's original order
+ * is never lost, only superseded.
+ */
+export interface OrderEditLineChange {
+  line_id: string;
+  kind: "added" | "removed" | "changed";
+  item_name: string;
+  /** The line before the edit, e.g. "Steak + Mushroom Sauce" (null for a line the waiter added). */
+  original: string | null;
+  /** The line after the edit, e.g. "Steak" (null when it was removed). */
+  updated: string | null;
+  /** What changed, e.g. ["Mushroom Sauce removed"], or ["Removed Chips ×1"]. */
+  changes: string[];
+  before: OrderLine | null;
+  after: OrderLine | null;
+}
+
+/** `orders/{id}.edits/{editId}` — one save of the waiter's order editor. */
+export interface OrderEditRecord {
+  id: string;
+  at: string;
+  /** The waiter's name, as on the order's history. */
+  by: string;
+  by_id: string | null;
+  /** The order's status when it was edited. */
+  status_before: string;
+  lines: OrderEditLineChange[];
+  special_instructions: { from: string | null; to: string | null } | null;
+  /** Every change in words — the same text as the order's history. */
+  summary: string;
+  total_before: number;
+  total_after: number;
+  /** The order had been confirmed with the table; this edit withdrew that, so it must be confirmed again. */
+  confirmation_withdrawn: boolean;
 }
 
 const noteOf = (v: unknown) => str(v).slice(0, MAX_TEXT) || null;
@@ -291,6 +331,89 @@ const addonKey = (addons: OrderLineAddon[] | null | undefined) =>
     .sort()
     .join(",");
 const lineLabel = (line: Pick<OrderLine, "name">) => line.name;
+
+/** A line in one phrase: "Steak + Mushroom Sauce", "2× Burger (Large) + Cooking: Rare". */
+export function describeOrderLine(
+  line: Pick<OrderLine, "name" | "quantity"> & {
+    variant?: OrderLineVariant | null;
+    addons?: OrderLineAddon[] | null;
+  },
+): string {
+  const name = line.variant?.name ? `${line.name} (${line.variant.name})` : line.name;
+  const extras = (line.addons ?? []).map((a) =>
+    isModifierAddon(a) || a.quantity <= 1 ? a.name : `${a.name} ×${a.quantity}`,
+  );
+  return [`${line.quantity > 1 ? `${line.quantity}× ` : ""}${name}`, ...extras].join(" + ");
+}
+
+/**
+ * How a line's add-ons and modifier choices changed, in words: "Mushroom
+ * Sauce removed", "Extra cheese added", "Extra cheese ×1 → ×2", and for a
+ * swapped choice in a choose-one group "Cooking: Rare → Medium". A modifier's
+ * quantity follows the line's, so that alone isn't a change.
+ */
+export function describeAddonChanges(
+  before: OrderLineAddon[] | null | undefined,
+  after: OrderLineAddon[] | null | undefined,
+): string[] {
+  const was = new Map((before ?? []).map((a) => [a.id, a]));
+  const now = new Map((after ?? []).map((a) => [a.id, a]));
+  const removed = [...was.values()].filter((a) => !now.has(a.id));
+  const added = [...now.values()].filter((a) => !was.has(a.id));
+  const group = (a: OrderLineAddon) => parseModifierAddonId(a.id)?.modifier_id ?? null;
+  const choice = (a: OrderLineAddon) => a.name.split(": ").slice(1).join(": ") || a.name;
+  const label = (a: OrderLineAddon) =>
+    !isModifierAddon(a) && a.quantity > 1 ? `${a.name} ×${a.quantity}` : a.name;
+  const out: string[] = [];
+
+  for (const gone of removed) {
+    const g = group(gone);
+    const swapped = g ? added.filter((a) => group(a) === g) : [];
+    const gonesInGroup = g ? removed.filter((a) => group(a) === g) : [];
+    if (swapped.length === 1 && gonesInGroup.length === 1) {
+      out.push(`${gone.name} → ${choice(swapped[0]!)}`);
+      added.splice(added.indexOf(swapped[0]!), 1);
+    } else {
+      out.push(`${label(gone)} removed`);
+    }
+  }
+  for (const a of added) out.push(`${label(a)} added`);
+  for (const [id, a] of now) {
+    const b = was.get(id);
+    if (b && !isModifierAddon(a) && b.quantity !== a.quantity) {
+      out.push(`${a.name} ×${b.quantity} → ×${a.quantity}`);
+    }
+  }
+  return out;
+}
+
+/** Read `orders/{id}.edits` back as a list, oldest first. */
+export function normalizeOrderEdits(raw: unknown): OrderEditRecord[] {
+  if (!raw || typeof raw !== "object") return [];
+  return Object.entries(raw as Record<string, unknown>)
+    .filter((entry): entry is [string, Record<string, unknown>] =>
+      Boolean(entry[1] && typeof entry[1] === "object"),
+    )
+    .map(([id, e]) => ({
+      id: str(e["id"]) || id,
+      at: str(e["at"]),
+      by: str(e["by"]) || "Staff",
+      by_id: str(e["by_id"]) || null,
+      status_before: str(e["status_before"]),
+      lines: (Array.isArray(e["lines"]) ? (e["lines"] as OrderEditLineChange[]) : []).filter(
+        (l) => l && typeof l === "object",
+      ),
+      special_instructions:
+        e["special_instructions"] && typeof e["special_instructions"] === "object"
+          ? (e["special_instructions"] as OrderEditRecord["special_instructions"])
+          : null,
+      summary: str(e["summary"]),
+      total_before: Number(e["total_before"]) || 0,
+      total_after: Number(e["total_after"]) || 0,
+      confirmation_withdrawn: e["confirmation_withdrawn"] === true,
+    }))
+    .sort((a, b) => a.at.localeCompare(b.at));
+}
 
 /**
  * Apply a waiter's edit to an order's current lines.
@@ -357,6 +480,7 @@ export function applyOrderEdit(
   const valid = candidates.length > 0 ? validateItems(candidates, MAX_LINES_PER_ORDER) : [];
 
   const changes: string[] = [];
+  const lineChanges: OrderEditLineChange[] = [];
   const next: Record<string, OrderLine> = {};
   for (const [id, line] of Object.entries(items)) {
     if (!base.has(id)) {
@@ -365,18 +489,35 @@ export function applyOrderEdit(
     }
     const index = lines.findIndex((l) => l.id === id);
     if (index === -1) {
-      changes.push(`Removed ${lineLabel(line)} ×${line.quantity}`);
+      const removed = `Removed ${lineLabel(line)} ×${line.quantity}`;
+      changes.push(removed);
+      lineChanges.push({
+        line_id: id,
+        kind: "removed",
+        item_name: line.name,
+        original: describeOrderLine(line),
+        updated: null,
+        changes: [removed],
+        before: line,
+        after: null,
+      });
       continue;
     }
     const input = valid[index]!;
     const parts: string[] = [];
     if (input.quantity !== line.quantity) parts.push(`×${line.quantity} → ×${input.quantity}`);
     if ((input.variant?.id ?? null) !== (line.variant?.id ?? null)) {
-      parts.push(input.variant ? `size ${input.variant.name}` : "no size");
+      // The ids differ, so at least one side has a size.
+      parts.push(
+        input.variant && line.variant
+          ? `size ${line.variant.name} → ${input.variant.name}`
+          : input.variant
+            ? `size ${input.variant.name}`
+            : `size ${line.variant!.name} removed`,
+      );
     }
     if (addonKey(input.addons) !== addonKey(line.addons)) {
-      const options = describeLineOptions({ addons: input.addons ?? [] });
-      parts.push(options.length > 0 ? `extras: ${options.join(", ")}` : "extras removed");
+      parts.push(...describeAddonChanges(line.addons, input.addons));
     }
     const notes = noteOf(input.notes);
     if (notes !== noteOf(line.notes)) parts.push(notes ? `note "${notes}"` : "note removed");
@@ -396,6 +537,16 @@ export function applyOrderEdit(
       edited_by: ctx.editor,
     };
     next[id] = { ...updated, line_total: lineTotal(updated) };
+    lineChanges.push({
+      line_id: id,
+      kind: "changed",
+      item_name: line.name,
+      original: describeOrderLine(line),
+      updated: describeOrderLine(next[id]!),
+      changes: parts,
+      before: line,
+      after: next[id]!,
+    });
   }
 
   const newLineId = ctx.newLineId ?? (() => randomId("ln"));
@@ -418,7 +569,18 @@ export function applyOrderEdit(
       added_at: ctx.at,
     };
     next[id] = created;
-    changes.push(`Added ${input.name} ×${input.quantity}`);
+    const added = `Added ${input.name} ×${input.quantity}`;
+    changes.push(added);
+    lineChanges.push({
+      line_id: id,
+      kind: "added",
+      item_name: input.name,
+      original: null,
+      updated: describeOrderLine(created),
+      changes: [added],
+      before: null,
+      after: created,
+    });
   });
 
   if (Object.keys(next).length === 0) {
@@ -444,7 +606,7 @@ export function applyOrderEdit(
     }
   }
 
-  return { items: next, special_instructions: special, changes };
+  return { items: next, special_instructions: special, changes, line_changes: lineChanges };
 }
 
 /** Recount how many items each guest contributed, after an edit. Guests stay listed even at 0. */

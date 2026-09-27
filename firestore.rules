@@ -156,12 +156,26 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------- orders
+    // A dine-in order can only be in front of the kitchen (or served) once a
+    // waiter has confirmed it with the table, whichever app writes it — see
+    // docs/DINE_IN_TABLES_QR_HANDOVER.md, "Waiter confirmation".
+    function dineInConfirmedBeforeKitchen() {
+      let next = request.resource.data;
+      return next.get('order_type', '') != 'dine_in'
+        || !(next.get('status', '') in ['accepted', 'preparing', 'ready', 'delivered'])
+        || next.get('dine_in', {}).get('confirmed_at', null) != null;
+    }
+
     match /orders/{orderId} {
       // A driver may only read/update an order already assigned to them
       // (never create or delete) — needed for the driver app's direct
       // "offered -> assigned -> arrived -> picked_up -> ..." status writes.
-      allow read, update: if isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver();
-      allow create, delete: if isPlatformAdmin() || isAnyRestaurantMember();
+      allow read: if isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver();
+      allow update: if (isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver())
+        && dineInConfirmedBeforeKitchen();
+      allow create: if (isPlatformAdmin() || isAnyRestaurantMember())
+        && dineInConfirmedBeforeKitchen();
+      allow delete: if isPlatformAdmin() || isAnyRestaurantMember();
       match /{document=**} {
         allow read, write: if isPlatformAdmin() || isAnyRestaurantMember()
           || (signedIn()

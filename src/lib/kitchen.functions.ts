@@ -11,6 +11,7 @@ import {
 } from "@/lib/orders.firebase";
 import { audit } from "@/lib/audit";
 import { profiles } from "@/lib/demo-store";
+import { normalizeDineIn } from "@/lib/dine-in";
 import { describeLineOptions } from "@/lib/dine-in-order-edit";
 
 export type KitchenStatus = "accepted" | "preparing" | "ready" | "assigned" | "picked_up";
@@ -29,6 +30,10 @@ export interface KitchenOrder {
   restaurant_id: string;
   restaurant_name: string;
   customer_name: string;
+  /** Dine-in only: the table to take it to, e.g. "12". */
+  table_label: string | null;
+  /** False only for a dine-in order no waiter has confirmed — it must never be shown. */
+  on_board: boolean;
   items: {
     id: string;
     item_name: string;
@@ -44,12 +49,25 @@ export interface KitchenOrder {
 // Kitchen only sees orders once they've been accepted on the Orders page.
 // The Incoming column on Orders is where new customer orders land; kitchen
 // starts from "accepted" (chef accepts it onto the pass) → preparing → ready.
-// A dine-in order waiting for a waiter's confirmation is never on the board.
+// A dine-in order reaches "accepted" only when a waiter sends it, after
+// confirming it with the table — and even then the board double-checks the
+// confirmation, so an unconfirmed dine-in order is never shown to the kitchen.
 const KITCHEN_STATUSES: OrderStatus[] = ["accepted", "preparing", "ready"];
 
 /** Whether an order in this status is on the kitchen board. */
 export function isKitchenStatus(status: string): boolean {
   return KITCHEN_STATUSES.includes(status as OrderStatus);
+}
+
+/** Whether the kitchen may see this order: in a kitchen status, and — for a
+ *  dine-in order — confirmed by a waiter. */
+export function isOnKitchenBoard(o: {
+  status: string;
+  order_type?: string | null;
+  dine_in?: { confirmed_at?: string | null } | null;
+}): boolean {
+  if (!isKitchenStatus(o.status)) return false;
+  return o.order_type !== "dine_in" || Boolean(o.dine_in?.confirmed_at);
 }
 
 let cached: KitchenOrder[] = [];
@@ -58,6 +76,7 @@ let unsub: (() => void) | null = null;
 
 function toKitchen(p: OrderPayload): KitchenOrder {
   const o = p.order;
+  const dineIn = orderType(o) === "dine_in" ? normalizeDineIn(o.dine_in) : null;
   return {
     id: o.id,
     order_number: o.order_number,
@@ -71,6 +90,8 @@ function toKitchen(p: OrderPayload): KitchenOrder {
     restaurant_id: o.restaurant_id,
     restaurant_name: o.restaurant_name,
     customer_name: o.customer_name,
+    table_label: dineIn?.table_label ?? null,
+    on_board: isOnKitchenBoard({ status: o.status, order_type: orderType(o), dine_in: dineIn }),
     items: p.items.map((l) => ({
       id: l.id,
       item_name: [l.variant?.name, l.name].filter(Boolean).join(" — "),
@@ -113,7 +134,8 @@ export function onKitchenChanged(cb: (rows: KitchenOrder[]) => void): () => void
 
 const NEXT_STATUS: Record<OrderStatus, OrderStatus | undefined> = {
   pending: undefined, // must be accepted on the Orders page, not in kitchen
-  waiting_for_waiter_confirmation: undefined, // dine-in: a waiter confirms it first
+  waiting_for_waiter_confirmation: undefined, // dine-in: a waiter confirms it first…
+  waiter_confirmed: undefined, // …then sends it to the kitchen
   accepted: "preparing",
   preparing: "ready",
   ready: undefined, // dispatch picks up from here
@@ -131,7 +153,7 @@ export async function getKitchenQueue(
 ): Promise<KitchenOrder[]> {
   const rid = input?.restaurantId;
   return getCached()
-    .filter((o) => isKitchenStatus(o.status))
+    .filter((o) => o.on_board)
     .filter((o) => !rid || rid === "all" || o.restaurant_id === rid)
     .slice()
     .sort((a, b) => a.placed_at.localeCompare(b.placed_at))
@@ -140,7 +162,7 @@ export async function getKitchenQueue(
 
 export async function advanceOrder(input: { orderId: string; nextStatus: string }) {
   const order = getCached().find((o) => o.id === input.orderId);
-  if (!order) throw new Error("Order not found");
+  if (!order || !order.on_board) throw new Error("Order not found");
   const expected = NEXT_STATUS[order.status];
   if (!expected || expected !== input.nextStatus) {
     throw new Error(`Cannot move order from ${order.status} to ${input.nextStatus}`);

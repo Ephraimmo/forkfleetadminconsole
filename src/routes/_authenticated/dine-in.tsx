@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { format, formatDistanceToNow } from "date-fns";
-import { Armchair, BellRing, ChefHat, ConciergeBell, QrCode, Search } from "lucide-react";
+import { Armchair, BellRing, ChefHat, ConciergeBell, QrCode, Search, Utensils } from "lucide-react";
 
 import { AwaitingConfirmationCard } from "@/components/dine-in/awaiting-confirmation-card";
 import { DineInActionsProvider } from "@/components/dine-in/dine-in-order-actions";
@@ -35,12 +35,16 @@ import {
   dineInStatusLabel,
   filterDineInOrders,
   isAwaitingWaiterConfirmation,
+  isWithWaiter,
   OPEN_DINE_IN_STATUSES,
 } from "@/lib/dine-in";
 import type { OrderStatus } from "@/lib/orders.firebase";
 import { activeWaiterRequests } from "@/lib/waiter-requests.firebase";
 
 export const Route = createFileRoute("/_authenticated/dine-in")({
+  // `order` opens that order's details — e.g. from an "Order Ready" alert.
+  validateSearch: (search: Record<string, unknown>): { order?: string } =>
+    typeof search["order"] === "string" && search["order"] ? { order: search["order"] } : {},
   head: () => ({
     meta: [
       { title: "Dine-in orders — Hearth Admin" },
@@ -80,7 +84,10 @@ function DineInOrdersPage() {
   const [allOrders, setAllOrders] = useState<DispatchOrder[]>([]);
   useEffect(() => onOrdersChanged(setAllOrders), []);
   const requests = useWaiterRequests({ notify: true });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const selectedId = Route.useSearch().order ?? null;
+  const setSelectedId = (id: string | null) =>
+    void navigate({ to: "/dine-in", search: id ? { order: id } : {}, replace: true });
 
   const dineIn = useMemo(() => filterDineInOrders(allOrders), [allOrders]);
   const restaurants = useMemo(() => {
@@ -96,12 +103,19 @@ function DineInOrdersPage() {
     () => filterDineInOrders(dineIn, { restaurantId, status, search }),
     [dineIn, restaurantId, status, search],
   );
-  // The waiter's two queues follow the restaurant filter only.
+  // The waiter's queues follow the restaurant filter only, longest-waiting first.
   const waiting = useMemo(
     () =>
-      filterDineInOrders(dineIn, { restaurantId, status: "waiting_for_waiter_confirmation" })
-        .slice()
-        .reverse(), // longest-waiting first
+      filterDineInOrders(dineIn, { restaurantId })
+        .filter((o) => isWithWaiter(o.status))
+        .reverse(),
+    [dineIn, restaurantId],
+  );
+  const readyToServe = useMemo(
+    () =>
+      filterDineInOrders(dineIn, { restaurantId, status: "ready" }).sort((a, b) =>
+        (a.ready_at ?? a.placed_at).localeCompare(b.ready_at ?? b.placed_at),
+      ),
     [dineIn, restaurantId],
   );
   const calls = useMemo(
@@ -125,7 +139,7 @@ function DineInOrdersPage() {
       required={["orders.view", "orders.manage"]}
       breadcrumb={["Operations", "Dine-in orders"]}
       title="Dine-in orders"
-      description="Orders placed at a table by scanning its QR code, and guests calling for a waiter. A guest's order waits for a waiter to confirm it before it goes to the kitchen."
+      description="Orders placed at a table by scanning its QR code, and guests calling for a waiter. A guest's order goes to the kitchen only after a waiter confirms it with the table and sends it, and the waiter marks it served once the kitchen has it ready."
       actions={
         <div className="flex flex-wrap items-center gap-2">
           <Button asChild variant="outline">
@@ -188,10 +202,14 @@ function DineInOrdersPage() {
                 />
                 <Stat label="Open dine-in orders" value={openCount} />
                 <Stat label="Preparing" value={count("preparing")} />
-                <Stat label="Ready to serve" value={count("ready")} />
+                <Stat
+                  label="Ready to serve"
+                  value={count("ready")}
+                  highlight={count("ready") > 0}
+                />
               </div>
 
-              <div className="grid gap-4 lg:grid-cols-2">
+              <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-base">
@@ -226,18 +244,46 @@ function DineInOrdersPage() {
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-base">
-                      <ChefHat className="size-4 text-fuchsia-300" /> Waiting for waiter
-                      confirmation
+                      <Utensils className="size-4 text-emerald-300" /> Ready to serve
+                    </CardTitle>
+                    <CardDescription>
+                      The kitchen has finished these. Take them to the table, then mark them served.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {readyToServe.length === 0 ? (
+                      <p className="py-6 text-center text-sm text-muted-foreground">
+                        Nothing is waiting to be served.
+                      </p>
+                    ) : (
+                      readyToServe.map((order) => (
+                        <AwaitingConfirmationCard
+                          key={order.id}
+                          order={order}
+                          canManage={canManage}
+                          showRestaurant={multiRestaurant}
+                          onOpen={() => setSelectedId(order.id)}
+                        />
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <ChefHat className="size-4 text-fuchsia-300" /> Confirm &amp; send to kitchen
                     </CardTitle>
                     <CardDescription>
                       Orders from the table don&apos;t reach the kitchen until a waiter confirms
-                      them. Edit anything the guest chose first, if needed.
+                      them with the guests and sends them. Edit anything the guest chose first, if
+                      needed.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2">
                     {waiting.length === 0 ? (
                       <p className="py-6 text-center text-sm text-muted-foreground">
-                        Nothing is waiting for confirmation.
+                        Nothing is waiting for the waiter.
                       </p>
                     ) : (
                       waiting.map((order) => (

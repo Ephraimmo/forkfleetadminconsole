@@ -1,11 +1,13 @@
 // Everything about one dine-in order: table, guests, items with their
-// modifiers and notes, totals and history — plus the waiter's actions while
-// it waits for confirmation.
+// modifiers and notes, totals, who confirmed, sent and served it, its edit
+// history and its timeline — plus the waiter's next step (confirm, send to
+// the kitchen, or mark served).
 
 import { format } from "date-fns";
 
 import { DineInOrderActions } from "@/components/dine-in/dine-in-order-actions";
 import { DineInStatusBadge } from "@/components/dine-in/dine-in-status-badge";
+import { OrderEditHistory } from "@/components/dine-in/order-edit-history";
 import { OrderModeBadge } from "@/components/restaurants/tables-manager";
 import { Button } from "@/components/ui/button";
 import {
@@ -81,10 +83,36 @@ export function DineInOrderDialog({
                 <dd>{when(order.created_at || order.placed_at)}</dd>
                 {dineIn?.confirmed_at && (
                   <>
-                    <dt className="text-muted-foreground">Sent to kitchen</dt>
+                    <dt className="text-muted-foreground">Confirmed</dt>
                     <dd>
                       {when(dineIn.confirmed_at)}
                       {dineIn.confirmed_by ? ` by ${dineIn.confirmed_by}` : ""}
+                    </dd>
+                  </>
+                )}
+                {dineIn?.sent_to_kitchen_at && (
+                  <>
+                    <dt className="text-muted-foreground">Sent to kitchen</dt>
+                    <dd>
+                      {when(dineIn.sent_to_kitchen_at)}
+                      {dineIn.sent_to_kitchen_by ? ` by ${dineIn.sent_to_kitchen_by}` : ""}
+                    </dd>
+                  </>
+                )}
+                {order.status === "ready" && (
+                  <>
+                    <dt className="text-muted-foreground">Ready</dt>
+                    <dd className="font-medium text-emerald-300">
+                      Waiting to be served{order.ready_at ? ` since ${when(order.ready_at)}` : ""}
+                    </dd>
+                  </>
+                )}
+                {dineIn?.served_at && (
+                  <>
+                    <dt className="text-muted-foreground">Served</dt>
+                    <dd>
+                      {when(dineIn.served_at)}
+                      {dineIn.served_by ? ` by ${dineIn.served_by}` : ""}
                     </dd>
                   </>
                 )}
@@ -116,6 +144,11 @@ export function DineInOrderDialog({
                               Added by {item.added_by_label}
                             </p>
                           )}
+                          {item.edited_by && (
+                            <p className="text-[10px] text-amber-300/90">
+                              Edited by {item.edited_by} · {when(item.edited_at)} — see edit history
+                            </p>
+                          )}
                         </div>
                         <span className="shrink-0 tabular-nums">{money(item.line_total)}</span>
                       </li>
@@ -142,6 +175,8 @@ export function DineInOrderDialog({
                 <dt className="font-medium">Total</dt>
                 <dd className="text-right font-medium tabular-nums">{money(order.total)}</dd>
               </dl>
+
+              <OrderEditHistory orderNumber={order.order_number} edits={order.edits} />
 
               {order.timeline.length > 0 && (
                 <section>

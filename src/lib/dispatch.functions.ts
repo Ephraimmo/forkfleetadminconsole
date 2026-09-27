@@ -9,7 +9,9 @@
 // authoritative driver-app contract this is built against:
 //   pending      -> accept (Orders page) or reject (Orders page, with reason)
 //   waiting_for_waiter_confirmation (dine-in only) -> a waiter edits and
-//                   confirms it (-> accepted) or rejects it — see
+//                   confirms it with the table (-> waiter_confirmed), then
+//                   sends it to the kitchen (-> accepted), or rejects it; once
+//                   ready, the waiter marks it served (-> delivered) — see
 //                   dine-in-orders.firebase.ts. Never on the dispatch board.
 //   accepted     -> kitchen starts cooking   (Orders page "Send to kitchen" or auto)
 //   preparing    -> kitchen marks ready
@@ -64,8 +66,8 @@ import {
   isDriverEligibleForBranch,
 } from "@/lib/drivers.firebase";
 import { getOrderPaymentEvidence } from "@/lib/payments.firebase";
-import { isAwaitingWaiterConfirmation, normalizeDineIn, type DineInOrderInfo } from "@/lib/dine-in";
-import { confirmDineInOrder } from "@/lib/dine-in-orders.firebase";
+import { isWithWaiter, normalizeDineIn, type DineInOrderInfo } from "@/lib/dine-in";
+import { normalizeOrderEdits, type OrderEditRecord } from "@/lib/dine-in-order-edit";
 import {
   auditLogs,
   drivers,
@@ -88,6 +90,8 @@ export interface DispatchOrder {
   /** "delivery" needs a driver; "pickup" is collected by the customer. */
   order_type: OrderType;
   placed_at: string;
+  /** When the kitchen marked it ready. */
+  ready_at: string | null;
   driver_status: OrderDriverStatus | null;
   assigned_at: string | null;
   arrived_at_restaurant: string | null;
@@ -138,10 +142,15 @@ export interface DispatchOrder {
     /** Dine-in: the guest (or staff member) who added the line. */
     added_by_label: string | null;
     added_at: string | null;
+    /** Dine-in: the last time a waiter changed the line, and who. */
+    edited_at: string | null;
+    edited_by: string | null;
   }[];
   timeline: { status: string; at: string; note: string | null; actor: string | null }[];
   /** Table, order mode, session and waiter — dine-in orders only. */
   dine_in: DineInOrderInfo | null;
+  /** Every change a waiter made to what was ordered, oldest first (dine-in only). */
+  edits: OrderEditRecord[];
   created_at: string;
   updated_at: string;
 }
@@ -185,6 +194,7 @@ export interface AuditRow {
 export type OrderStage =
   | "pending"
   | "waiting_for_waiter_confirmation" // dine-in only — a waiter must confirm it
+  | "waiter_confirmed" // dine-in only — confirmed with the table, not yet sent to the kitchen
   | "accepted"
   | "preparing"
   | "ready" // pickup orders only — waiting for the customer to collect
@@ -205,6 +215,7 @@ export type OrderStage =
 export const STAGE_LABEL: Record<OrderStage, string> = {
   pending: "Pending",
   waiting_for_waiter_confirmation: "Waiting for waiter confirmation",
+  waiter_confirmed: "Confirmed by waiter — not sent to kitchen",
   accepted: "Accepted",
   preparing: "Preparing",
   ready: "Ready for pickup",
@@ -235,7 +246,7 @@ export function orderStage(o: {
 }): OrderStage {
   const raw = o.status as string;
 
-  if (o.order_type === "dine_in" && isAwaitingWaiterConfirmation(raw)) {
+  if (o.order_type === "dine_in" && raw === "pending") {
     // Legacy dine-in orders wait for the waiter as "pending".
     return "waiting_for_waiter_confirmation";
   }
@@ -286,6 +297,7 @@ function toDispatchOrder(p: OrderPayload): DispatchOrder {
     status: o.status,
     order_type: orderType(o),
     placed_at: o.placed_at,
+    ready_at: o.ready_at ?? null,
     driver_status: o.driver_status,
     assigned_at: o.assigned_at,
     arrived_at_restaurant: o.arrived_at_restaurant,
@@ -327,6 +339,7 @@ function toDispatchOrder(p: OrderPayload): DispatchOrder {
       actor: t.actor ?? null,
     })),
     dine_in: orderType(o) === "dine_in" ? normalizeDineIn(o.dine_in) : null,
+    edits: orderType(o) === "dine_in" ? normalizeOrderEdits(o.edits) : [],
     created_at: o.created_at,
     updated_at: o.updated_at,
   };
@@ -347,6 +360,8 @@ function lineToItem(l: OrderLine): DispatchOrder["items"][number] {
     addons: Array.isArray(l.addons) ? l.addons : [],
     added_by_label: l.added_by?.label ?? l.added_by_staff ?? null,
     added_at: l.added_at ?? null,
+    edited_at: l.edited_at ?? null,
+    edited_by: l.edited_by ?? null,
   };
 }
 
@@ -372,9 +387,17 @@ function currentActor(): string | null {
   }
 }
 
+let haveSnapshot = false;
+
+/** Whether the live order book has loaded at least once (before that, no rows ≠ no orders). */
+export function hasOrderSnapshot(): boolean {
+  return haveSnapshot;
+}
+
 function ensureSubscribed() {
   if (unsub) return;
   unsub = subscribeFirebaseOrders((payloads) => {
+    haveSnapshot = true;
     cachedRows = payloads.map(toDispatchOrder);
     subscribers.forEach((cb) => {
       try {
@@ -470,23 +493,16 @@ export async function listDrivers(
 /* ------------------------------------------------------------ mutations --- */
 
 /** Accept a pending order (moves it from Incoming to the kitchen queue). A
- *  dine-in order is confirmed by the waiter instead (confirmDineInOrder). */
+ *  dine-in order is never accepted this way: a waiter confirms it with the
+ *  table and sends it to the kitchen (dine-in-orders.firebase.ts). */
 export async function acceptOrder(arg: { orderId: string } | { data: { orderId: string } }) {
   const input = unwrap(arg)!;
   const order = getCached().find((o) => o.id === input.orderId);
   if (!order) throw new Error("Order not found");
   if (order.order_type === "dine_in") {
-    const actor = currentActor();
-    await confirmDineInOrder({ order_id: order.id, actor: { email: actor } });
-    logAudit({
-      action: "order.status.accepted",
-      entityType: "order",
-      entityId: order.id,
-      before: { status: order.status },
-      after: { status: "accepted" },
-      actorEmail: actor,
-    });
-    return { ok: true };
+    throw new Error(
+      `Dine-in order ${order.order_number} goes to the kitchen through its waiter — use "Confirm order", then "Send to kitchen".`,
+    );
   }
   if (order.status !== "pending")
     throw new Error(`Cannot accept an order that is ${order.status.replace("_", " ")}`);
@@ -524,8 +540,7 @@ export async function rejectOrder(
   const order = getCached().find((o) => o.id === input.orderId);
   if (!order) throw new Error("Order not found");
   const rejectable =
-    order.status === "pending" ||
-    (order.order_type === "dine_in" && isAwaitingWaiterConfirmation(order.status));
+    order.status === "pending" || (order.order_type === "dine_in" && isWithWaiter(order.status));
   if (!rejectable) {
     throw new Error(`Cannot reject an order that is already ${order.status.replace(/_/g, " ")}`);
   }

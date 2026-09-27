@@ -28,6 +28,7 @@ import {
   type FirestoreValue,
 } from "@/lib/firestore";
 import type { DineInOrderInfo } from "@/lib/dine-in";
+import type { OrderEditRecord } from "@/lib/dine-in-order-edit";
 
 /**
  * The order's overall status, shared with the customer app and restaurant
@@ -43,13 +44,15 @@ import type { DineInOrderInfo } from "@/lib/dine-in";
  * those values as their real equivalent, so old in-flight orders keep
  * working correctly without a data migration.
  *
- * "waiting_for_waiter_confirmation" is dine-in only: a guest's order sits
- * there until a waiter reviews (and may edit) it and confirms it, which moves
- * it to "accepted" and onto the kitchen board. See dine-in.ts.
+ * "waiting_for_waiter_confirmation" and "waiter_confirmed" are dine-in only:
+ * a guest's order waits until a waiter reviews (and may edit) it and confirms
+ * it with the table ("waiter_confirmed"), and only the waiter's "Send to
+ * kitchen" then moves it to "accepted" and onto the kitchen board. See dine-in.ts.
  */
 export type OrderStatus =
   | "pending"
   | "waiting_for_waiter_confirmation"
+  | "waiter_confirmed"
   | "accepted"
   | "preparing"
   | "ready"
@@ -206,6 +209,9 @@ export interface FirebaseOrder {
   /** Table, order mode, session and waiter — present only when
    *  order_type is "dine_in". */
   dine_in?: DineInOrderInfo | null;
+  /** Dine-in only: every change a waiter made to what was ordered, keyed by
+   *  edit id (see OrderEditRecord in dine-in-order-edit.ts). */
+  edits?: Record<string, OrderEditRecord> | null;
 
   created_at: string;
   updated_at: string;
@@ -383,9 +389,43 @@ const DELIVERY_ONLY_STATUSES: OrderStatus[] = ["assigned", "on_the_way"];
 // Dine-in orders are served at the table — no driver, and no counter collection.
 const NOT_FOR_DINE_IN_STATUSES: OrderStatus[] = ["assigned", "picked_up", "on_the_way"];
 // Only a dine-in order waits for a waiter.
-const DINE_IN_ONLY_STATUSES: OrderStatus[] = ["waiting_for_waiter_confirmation"];
+const DINE_IN_ONLY_STATUSES: OrderStatus[] = [
+  "waiting_for_waiter_confirmation",
+  "waiter_confirmed",
+];
 // Statuses an order can still be rejected from (before anyone has accepted it).
-const REJECTABLE_STATUSES: OrderStatus[] = ["pending", "waiting_for_waiter_confirmation"];
+const REJECTABLE_STATUSES: OrderStatus[] = [
+  "pending",
+  "waiting_for_waiter_confirmation",
+  "waiter_confirmed",
+];
+// A dine-in order only takes these steps through the waiter's own actions in
+// dine-in-orders.firebase.ts, which also record who took them — never through
+// a plain status change. So nothing can put an order in front of the kitchen
+// that a waiter hasn't confirmed and sent, or mark it served without saying who.
+const DINE_IN_WAITER_STEPS: Partial<Record<OrderStatus, string>> = {
+  waiter_confirmed: "Confirm order",
+  accepted: "Send to kitchen",
+  delivered: "Mark as served",
+};
+const KITCHEN_BOARD_STATUSES: OrderStatus[] = ["accepted", "preparing", "ready"];
+
+function assertDineInStatusChange(order: FirebaseOrder, next: OrderStatus): void {
+  const step = DINE_IN_WAITER_STEPS[next];
+  if (step) {
+    throw new Error(
+      `Use "${step}" on the Dine-in orders page for dine-in order ${order.order_number}, so the waiter is recorded.`,
+    );
+  }
+  if (
+    (next === "preparing" || next === "ready") &&
+    !KITCHEN_BOARD_STATUSES.includes(order.status)
+  ) {
+    throw new Error(
+      `Dine-in order ${order.order_number} hasn't been confirmed by a waiter and sent to the kitchen yet.`,
+    );
+  }
+}
 
 export async function setFirebaseOrderStatus(input: {
   orderId: string;
@@ -425,6 +465,7 @@ function statusChangePatch(
       `Dine-in orders never go through "${input.status.replace("_", " ")}" — they're served at the table.`,
     );
   }
+  if (orderType(order) === "dine_in") assertDineInStatusChange(order, input.status);
   if (DINE_IN_ONLY_STATUSES.includes(input.status) && orderType(order) !== "dine_in") {
     throw new Error("Only dine-in orders wait for a waiter's confirmation.");
   }

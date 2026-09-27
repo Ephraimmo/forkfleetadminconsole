@@ -1,7 +1,10 @@
-// The waiter's order editor: change a dine-in order while it is still
-// waiting for confirmation — add and remove items, change quantities, sizes,
-// add-ons and modifiers, item notes and special instructions, and leave a
-// note — then save, or save and send it to the kitchen.
+// The waiter's order editor: change a dine-in order before it goes to the
+// kitchen — add and remove items, change quantities, sizes, add-ons and
+// modifiers, item notes and special instructions, and leave a note — then
+// save, or save and confirm it. Every save is kept in the order's edit history
+// (what each line was, who changed it, when). Changing an order that was
+// already confirmed withdraws the confirmation, so it is confirmed again
+// before anyone sends it to the kitchen.
 //
 // The editor works on a snapshot taken when it opens, so live updates never
 // overwrite what the waiter is doing. Items a guest adds meanwhile are shown
@@ -12,7 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertTriangle,
-  ChefHat,
+  CheckCheck,
   Loader2,
   Minus,
   Plus,
@@ -39,7 +42,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { DispatchOrder } from "@/lib/dispatch.functions";
 import { audit } from "@/lib/audit";
-import { dineInStatusLabel, isAwaitingWaiterConfirmation, type StaffActor } from "@/lib/dine-in";
+import { dineInStatusLabel, isWithWaiter, WAITER_CONFIRMED, type StaffActor } from "@/lib/dine-in";
 import {
   defaultVariant,
   describeLineOptions,
@@ -150,7 +153,8 @@ export function EditDineInOrderDialog({
   const menu = menuQuery.data ?? null;
   const menuItems = useMemo(() => new Map((menu?.items ?? []).map((i) => [i.id, i])), [menu]);
 
-  const awaiting = order ? isAwaitingWaiterConfirmation(order.status) : false;
+  const editable = order ? isWithWaiter(order.status) : false;
+  const confirmed = order?.status === WAITER_CONFIRMED;
   const liveIds = new Set(order?.items.map((i) => i.id) ?? []);
   const addedMeanwhile = order ? order.items.filter((i) => !base.includes(i.id)) : [];
   const goneMeanwhile = draft.some((l) => l.id && !liveIds.has(l.id));
@@ -223,20 +227,28 @@ export function EditDineInOrderDialog({
           after: { changes: result.changes.join("; ") || null, noted: result.noted },
         });
       }
-      if (andConfirm) {
+      // An order that was confirmed and wasn't changed is still confirmed.
+      const stillConfirmed = order.status === WAITER_CONFIRMED && !result.confirmation_withdrawn;
+      if (andConfirm && !stillConfirmed) {
         await confirmDineInOrder({ order_id: order.id, reviewed_line_ids: result.line_ids, actor });
         audit({
           action: "order.dine_in.confirmed",
           entityType: "order",
           entityId: order.id,
           before: { status: order.status },
-          after: { status: "accepted" },
+          after: { status: WAITER_CONFIRMED },
         });
-        toast.success(`${dineInOrderName(order)} sent to the kitchen.`);
+        toast.success(`${dineInOrderName(order)} confirmed.`, {
+          description: "Send it to the kitchen when the table is ready.",
+        });
       } else if (result.changes.length > 0 || result.noted) {
         toast.success(`${dineInOrderName(order)} updated.`, {
-          description: result.changes.slice(0, 4).join(" · ") || "Note added.",
+          description: result.confirmation_withdrawn
+            ? "It needs confirming again before it can go to the kitchen."
+            : result.changes.slice(0, 4).join(" · ") || "Note added.",
         });
+      } else if (andConfirm) {
+        toast.message(`${dineInOrderName(order)} is already confirmed.`);
       } else {
         toast.message("Nothing to save — the order is unchanged.");
       }
@@ -249,7 +261,7 @@ export function EditDineInOrderDialog({
   }
 
   const table = order?.dine_in ? tableDisplayName(order.dine_in.table_label) : "";
-  const blocked = !order || !awaiting || goneMeanwhile;
+  const blocked = !order || !editable || goneMeanwhile;
   const empty = draft.length === 0 && addedMeanwhile.length === 0;
 
   return (
@@ -262,7 +274,7 @@ export function EditDineInOrderDialog({
           </DialogTitle>
           <DialogDescription>
             {table ? `${table} · ` : ""}
-            Changes go to the kitchen only once you confirm the order.
+            Nothing goes to the kitchen until the order is confirmed and sent.
           </DialogDescription>
         </DialogHeader>
 
@@ -273,13 +285,19 @@ export function EditDineInOrderDialog({
             </p>
           ) : (
             <>
-              {!awaiting && (
+              {!editable && (
                 <Notice tone="error">
                   This order is now {dineInStatusLabel(order.status).toLowerCase()} — it can no
                   longer be edited.
                 </Notice>
               )}
-              {goneMeanwhile && awaiting && (
+              {confirmed && (
+                <Notice tone="info">
+                  This order has been confirmed with the table. Saving a change withdraws the
+                  confirmation — confirm it again before sending it to the kitchen.
+                </Notice>
+              )}
+              {goneMeanwhile && editable && (
                 <Notice tone="error">
                   Someone else changed this order while you were editing. Close and reopen it to
                   start from the latest version.
@@ -486,9 +504,9 @@ export function EditDineInOrderDialog({
             {saving === "confirm" ? (
               <Loader2 className="mr-1.5 size-4 animate-spin" />
             ) : (
-              <ChefHat className="mr-1.5 size-4" />
+              <CheckCheck className="mr-1.5 size-4" />
             )}
-            Save &amp; send to kitchen
+            Save &amp; confirm
           </Button>
         </DialogFooter>
       </DialogContent>

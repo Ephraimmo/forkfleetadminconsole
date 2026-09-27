@@ -44,6 +44,7 @@ import {
 } from "@/lib/kitchen.functions";
 import { useFirebaseRestaurants } from "@/hooks/use-firebase-restaurants";
 import { useFirebaseOrderSync } from "@/hooks/use-firebase-orders";
+import { tableDisplayName } from "@/lib/tables.firebase";
 
 export const Route = createFileRoute("/_authenticated/kitchen")({
   head: () => ({
@@ -85,7 +86,7 @@ const COLUMNS: {
     label: "Ready for pickup",
     next: null,
     icon: PackageCheck,
-    hint: "Delivery orders wait for a driver; pickup orders wait for the customer",
+    hint: "Delivery orders wait for a driver, pickup orders for the customer, dine-in orders for their waiter",
   },
 ];
 
@@ -315,6 +316,11 @@ function OrderTicket({
         </span>
         <OrderTypeBadge type={order.order_type} />
       </p>
+      {order.table_label && (
+        <p className="mt-0.5 text-sm font-semibold text-violet-300">
+          {tableDisplayName(order.table_label)}
+        </p>
+      )}
       <ul className="mt-2 space-y-0.5 text-xs">
         {order.items.map((item) => (
           <li key={item.id} className="flex justify-between gap-2">

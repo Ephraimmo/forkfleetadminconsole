@@ -24,6 +24,11 @@ function dineIn(partial: Partial<DineInOrderInfo> = {}): DineInOrderInfo {
     waiter_name: null,
     confirmed_at: null,
     confirmed_by: null,
+    sent_to_kitchen_at: null,
+    sent_to_kitchen_by: null,
+    served_at: null,
+    served_by: null,
+    served_by_id: null,
     ...partial,
   };
 }
@@ -84,6 +89,11 @@ describe("dine-in orders extend the existing order record", () => {
       waiter_name: null,
       confirmed_at: null,
       confirmed_by: null,
+      sent_to_kitchen_at: null,
+      sent_to_kitchen_by: null,
+      served_at: null,
+      served_by: null,
+      served_by_id: null,
     });
   });
 
@@ -107,7 +117,8 @@ describe("dine-in orders extend the existing order record", () => {
     );
     // Dine-in orders written before the waiter step wait the same way.
     expect(dineInStatusLabel("pending")).toBe("Waiting for waiter confirmation");
-    expect(dineInStatusLabel("accepted")).toBe("Confirmed");
+    expect(dineInStatusLabel("waiter_confirmed")).toBe("Confirmed — not sent yet");
+    expect(dineInStatusLabel("accepted")).toBe("Sent to kitchen");
     expect(dineInStatusLabel("preparing")).toBe("Preparing");
     expect(dineInStatusLabel("ready")).toBe("Ready");
     expect(dineInStatusLabel("delivered")).toBe("Served");

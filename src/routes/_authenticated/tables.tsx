@@ -4,6 +4,10 @@ import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { Armchair, ConciergeBell, Loader2, Settings2, Users } from "lucide-react";
 
+import {
+  DineInActionsProvider,
+  DineInOrderActions,
+} from "@/components/dine-in/dine-in-order-actions";
 import { DineInStatusBadge } from "@/components/dine-in/dine-in-status-badge";
 import { WaiterRequestCard } from "@/components/dine-in/waiter-request-card";
 import { PermissionGate } from "@/components/permission-gate";
@@ -34,10 +38,12 @@ import { onOrdersChanged, type DispatchOrder } from "@/lib/dispatch.functions";
 import {
   buildTableOverview,
   OCCUPANCY_LABEL,
+  SERVICE_LABEL,
   summarizeOverview,
   type OverviewOrder,
   type TableOccupancy,
   type TableOverview,
+  type TableService,
 } from "@/lib/table-overview";
 import { closeTableSession } from "@/lib/table-sessions.firebase";
 import {
@@ -106,6 +112,7 @@ function TableOverviewPage() {
   useEffect(() => onOrdersChanged(setOrders), []);
   const requests = useWaiterRequests({ notify: true });
   const orderNumbers = useMemo(() => new Map(orders.map((o) => [o.id, o.order_number])), [orders]);
+  const ordersById = useMemo(() => new Map(orders.map((o) => [o.id, o])), [orders]);
 
   // Idle seatings and "seated for" times depend on the clock, not just data.
   const [now, setNow] = useState(() => Date.now());
@@ -169,74 +176,86 @@ function TableOverviewPage() {
           );
         }
         return (
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              <Stat
-                label="Waiter requests"
-                value={String(summary.waiter_requests)}
-                highlight={summary.waiter_requests > 0}
+          <DineInActionsProvider>
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                <Stat
+                  label="Waiter requests"
+                  value={String(summary.waiter_requests)}
+                  highlight={summary.waiter_requests > 0}
+                />
+                <Stat
+                  label="Occupied tables"
+                  value={`${summary.occupied} of ${summary.tables - summary.inactive}`}
+                />
+                <Stat label="Available tables" value={String(summary.available)} />
+                <Stat label="Active orders" value={String(summary.active_orders)} />
+                <Stat label="Guests seated" value={String(summary.guests)} />
+              </div>
+
+              {tablesError ? (
+                <EmptyCard tone="error">{tablesError}</EmptyCard>
+              ) : tables === null ? (
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                  {[0, 1, 2].map((i) => (
+                    <Skeleton key={i} className="h-56 w-full" />
+                  ))}
+                </div>
+              ) : entries.length === 0 ? (
+                <EmptyCard>
+                  <p>{restaurant.name} has no tables yet.</p>
+                  <Button asChild variant="outline" className="mt-3">
+                    <Link to="/restaurants/$id" params={{ id: restaurant.id }}>
+                      <Settings2 className="mr-2 size-4" /> Set up tables
+                    </Link>
+                  </Button>
+                </EmptyCard>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                  {entries.map((entry) => (
+                    <TableCard
+                      key={entry.table.id}
+                      entry={entry}
+                      canManage={canManage}
+                      orderNumbers={orderNumbers}
+                      ordersById={ordersById}
+                      onClear={() => setClearing(entry)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              <ClearTableDialog
+                entry={clearing}
+                actor={staff.session?.email ?? null}
+                onDone={() => setClearing(null)}
               />
-              <Stat
-                label="Occupied tables"
-                value={`${summary.occupied} of ${summary.tables - summary.inactive}`}
-              />
-              <Stat label="Available tables" value={String(summary.available)} />
-              <Stat label="Active orders" value={String(summary.active_orders)} />
-              <Stat label="Guests seated" value={String(summary.guests)} />
             </div>
-
-            {tablesError ? (
-              <EmptyCard tone="error">{tablesError}</EmptyCard>
-            ) : tables === null ? (
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                {[0, 1, 2].map((i) => (
-                  <Skeleton key={i} className="h-56 w-full" />
-                ))}
-              </div>
-            ) : entries.length === 0 ? (
-              <EmptyCard>
-                <p>{restaurant.name} has no tables yet.</p>
-                <Button asChild variant="outline" className="mt-3">
-                  <Link to="/restaurants/$id" params={{ id: restaurant.id }}>
-                    <Settings2 className="mr-2 size-4" /> Set up tables
-                  </Link>
-                </Button>
-              </EmptyCard>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                {entries.map((entry) => (
-                  <TableCard
-                    key={entry.table.id}
-                    entry={entry}
-                    canManage={canManage}
-                    orderNumbers={orderNumbers}
-                    onClear={() => setClearing(entry)}
-                  />
-                ))}
-              </div>
-            )}
-
-            <ClearTableDialog
-              entry={clearing}
-              actor={staff.session?.email ?? null}
-              onDone={() => setClearing(null)}
-            />
-          </div>
+          </DineInActionsProvider>
         );
       }}
     </PermissionGate>
   );
 }
 
+const SERVICE_TONE: Record<TableService, string> = {
+  ready_to_serve: "border-emerald-500/30 bg-emerald-500/15 text-emerald-300",
+  with_waiter: "border-fuchsia-500/30 bg-fuchsia-500/15 text-fuchsia-300",
+  in_kitchen: "border-amber-500/25 bg-amber-500/15 text-amber-300",
+  served: "border-border bg-muted text-muted-foreground",
+};
+
 function TableCard({
   entry,
   canManage,
   orderNumbers,
+  ordersById,
   onClear,
 }: {
   entry: TableOverview;
   canManage: boolean;
   orderNumbers: Map<string, string>;
+  ordersById: Map<string, DispatchOrder>;
   onClear: () => void;
 }) {
   const { table, status, mode, session } = entry;
@@ -292,7 +311,36 @@ function TableCard({
               {OCCUPANCY_LABEL[status]}
             </Badge>
           </dd>
+          {entry.service && (
+            <>
+              <dt className="text-muted-foreground">Service</dt>
+              <dd>
+                <Badge variant="outline" className={SERVICE_TONE[entry.service]}>
+                  {SERVICE_LABEL[entry.service]}
+                </Badge>
+              </dd>
+            </>
+          )}
         </dl>
+
+        {entry.ready_orders.length > 0 && (
+          <ul className="space-y-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-xs">
+            {entry.ready_orders.map((ready) => {
+              const order = ordersById.get(ready.id);
+              return (
+                <li key={ready.id} className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium">{ready.order_number}</span> ready
+                    {multiple ? ` — ${ready.guest_label}` : ""}
+                  </span>
+                  {canManage && order && (
+                    <DineInOrderActions order={order} compact className="shrink-0" />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
 
         {occupied && multiple && <GuestOrders orders={entry.orders} />}
         {occupied && !multiple && entry.table_order && (
