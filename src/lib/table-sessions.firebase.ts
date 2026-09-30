@@ -449,6 +449,10 @@ export function joinSeating(
           order_count: 0,
           order_ids: [],
           guests: {},
+          // A waiter is assigned by staff-side code (waiters.firebase.ts), never by a guest.
+          waiter_id: null,
+          waiter_name: null,
+          waiter_assigned_at: null,
         };
   const seat: TableSessionGuest = session.guests[guest.id] ?? {
     label: guest.name ?? `Customer ${Object.keys(session.guests).length + 1}`,
@@ -470,7 +474,13 @@ function timelineEvent(
 }
 
 function newDineInOrder(input: {
-  table: { id: string; restaurant_id: string; label: string };
+  table: {
+    id: string;
+    restaurant_id: string;
+    label: string;
+    branch_id: string | null;
+    branch_name: string | null;
+  };
   session: TableSession;
   mode: "single" | "multiple";
   guest: DineInGuest & { id: string; name: string | null };
@@ -532,8 +542,8 @@ function newDineInOrder(input: {
     restaurant_id: table.restaurant_id,
     restaurant_name: input.restaurantName,
     restaurant_image: input.restaurantImage,
-    branch_id: null,
-    branch_name: null,
+    branch_id: table.branch_id,
+    branch_name: table.branch_name,
     // A multiple-mode order is one guest's; a single-mode order is the table's.
     customer_id: perGuest ? str(guest.customer_id) || null : null,
     customer_name: perGuest ? seat.label : tableName,
@@ -564,8 +574,9 @@ function newDineInOrder(input: {
       contributors: {
         [guest.id]: { label: seat.label, first_added_at: at, item_count: input.added },
       },
-      waiter_id: null,
-      waiter_name: null,
+      // The seating's waiter, when one is already looking after the table.
+      waiter_id: session.waiter_id,
+      waiter_name: session.waiter_name,
       confirmed_at: null,
       confirmed_by: null,
     },

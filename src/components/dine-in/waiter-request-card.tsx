@@ -7,6 +7,7 @@ import { BellRing, Check, CheckCheck, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useStaffActor } from "@/hooks/use-staff-actor";
+import type { StaffActor } from "@/lib/dine-in";
 import { tableDisplayName } from "@/lib/tables.firebase";
 import {
   acceptWaiterRequest,
@@ -26,6 +27,7 @@ export function WaiterRequestCard({
   showRestaurant = false,
   compact = false,
   orderNumber,
+  actor: actorOverride,
 }: {
   request: WaiterRequest;
   canManage: boolean;
@@ -35,8 +37,11 @@ export function WaiterRequestCard({
   compact?: boolean;
   /** The order number of the guest's current order, when known. */
   orderNumber?: string | null | undefined;
+  /** Who is answering — defaults to the signed-in console staff member. */
+  actor?: StaffActor;
 }) {
-  const actor = useStaffActor();
+  const staffActor = useStaffActor();
+  const actor = actorOverride ?? staffActor;
   const [busy, setBusy] = useState<"accept" | "resolve" | null>(null);
   const accepted = request.status === "accepted";
   const table = tableDisplayName(request.table_label);

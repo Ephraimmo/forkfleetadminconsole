@@ -73,8 +73,12 @@ export function orderModeLabel(mode: TableOrderMode, variant: "short" | "long" =
 export interface RestaurantTable {
   id: string;
   restaurant_id: string;
-  /** Table number or name, e.g. "12" or "Patio 3". Unique per restaurant. */
+  /** Table number or name, e.g. "12" or "Patio 3". Unique within its branch. */
   label: string;
+  /** The branch the table is at (null when the restaurant has no branches, or none is set). */
+  branch_id: string | null;
+  /** Snapshot of the branch's name, for display. */
+  branch_name: string | null;
   /** Seats at the table. Independent of order_mode. */
   capacity: number;
   /** Inactive tables stay listed but their QR code must not accept orders. */
@@ -115,6 +119,10 @@ export interface TableSession {
   order_ids: string[];
   /** Everyone who has ordered, keyed by guest id. */
   guests: Record<string, TableSessionGuest>;
+  /** The waiter looking after this seating (null until one is assigned — see waiters.firebase.ts). */
+  waiter_id: string | null;
+  waiter_name: string | null;
+  waiter_assigned_at: string | null;
 }
 
 /**
@@ -149,6 +157,9 @@ export interface TableConfigInput {
   capacity: number;
   active: boolean;
   order_mode: TableOrderMode;
+  /** Omit to leave the table's branch as it is (a new table then has none). */
+  branch_id?: string | null;
+  branch_name?: string | null;
 }
 
 export const DEFAULT_TABLE_CAPACITY = 4;
@@ -199,6 +210,9 @@ export function normalizeTableSession(raw: unknown): TableSession | null {
       ? (r["order_ids"] as unknown[]).filter((v): v is string => typeof v === "string" && v !== "")
       : [],
     guests,
+    waiter_id: strOrNull(r["waiter_id"]),
+    waiter_name: strOrNull(r["waiter_name"]),
+    waiter_assigned_at: strOrNull(r["waiter_assigned_at"]),
   };
 }
 
@@ -217,6 +231,8 @@ export function normalizeTable(
     id,
     restaurant_id: restaurantId,
     label: str(raw["label"]) || id,
+    branch_id: strOrNull(raw["branch_id"]),
+    branch_name: strOrNull(raw["branch_name"]),
     capacity:
       Number.isFinite(capacity) && capacity >= 1 ? Math.round(capacity) : DEFAULT_TABLE_CAPACITY,
     active: raw["active"] !== false,
@@ -272,11 +288,12 @@ export function tableDisplayName(label: string): string {
 
 /**
  * First problem with a table config, or null when it's valid. `others` are the
- * restaurant's other tables (exclude the one being edited).
+ * restaurant's other tables (exclude the one being edited); a name only has to
+ * be unique among the tables at the same branch.
  */
 export function validateTableConfig(
   input: TableConfigInput,
-  others: Pick<RestaurantTable, "label">[],
+  others: { label: string; branch_id?: string | null }[],
 ): string | null {
   const label = input.label.trim();
   if (!label) return "Enter a table number or name.";
@@ -293,8 +310,13 @@ export function validateTableConfig(
     return "Choose an order mode for this table.";
   }
   const key = tableLabelKey(label);
-  const clash = others.find((t) => tableLabelKey(t.label) === key);
-  if (clash) return `${tableDisplayName(clash.label)} already exists at this restaurant.`;
+  const branch = input.branch_id ?? null;
+  const clash = others.find(
+    (t) => (t.branch_id ?? null) === branch && tableLabelKey(t.label) === key,
+  );
+  if (clash) {
+    return `${tableDisplayName(clash.label)} already exists at this ${branch ? "branch" : "restaurant"}.`;
+  }
   return null;
 }
 
@@ -345,6 +367,12 @@ export async function saveTable(
     active: input.active,
     order_mode: input.order_mode,
   };
+  // The branch is only written when the caller sets it (an edit that doesn't
+  // mention it leaves the table's branch alone).
+  if (input.branch_id !== undefined) {
+    config.branch_id = input.branch_id?.trim() || null;
+    config.branch_name = config.branch_id ? input.branch_name?.trim() || null : null;
+  }
 
   // Re-read so the duplicate check runs against what's saved, not a stale list.
   const existing = await listTables(input.restaurant_id);
@@ -352,7 +380,10 @@ export async function saveTable(
   if (input.id && !current) throw new Error("This table no longer exists — refresh and try again.");
 
   const error = validateTableConfig(
-    config,
+    {
+      ...config,
+      branch_id: config.branch_id !== undefined ? config.branch_id : (current?.branch_id ?? null),
+    },
     existing.filter((t) => t.id !== input.id),
   );
   if (error) throw new Error(error);
@@ -388,6 +419,8 @@ export async function saveTable(
     id: randomId("tbl"),
     restaurant_id: input.restaurant_id,
     ...config,
+    branch_id: config.branch_id ?? null,
+    branch_name: config.branch_name ?? null,
     qr_token: null,
     qr_generated_at: null,
     qr_generated_by: null,

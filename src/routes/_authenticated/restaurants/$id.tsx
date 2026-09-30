@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft,
   Armchair,
+  UserRound,
   Bike,
   CheckCircle2,
   Coins,
@@ -57,6 +58,7 @@ import { useRestaurantCloudinaryConfig } from "@/hooks/use-restaurant-cloudinary
 import { RestaurantRewardsEditor } from "@/components/loyalty/restaurant-rewards-editor";
 import { PaymentMethodsEditor } from "@/components/restaurants/payment-methods-editor";
 import { TablesManager } from "@/components/restaurants/tables-manager";
+import { WaitersManager } from "@/components/restaurants/waiters-manager";
 import {
   defaultPaymentConfig,
   subscribePaymentConfig,
@@ -547,6 +549,9 @@ function RestaurantDetailPage() {
                 <TabsTrigger value="branches">Branches</TabsTrigger>
                 <TabsTrigger value="tables" className="gap-1.5">
                   <Armchair className="size-3.5" /> Tables
+                </TabsTrigger>
+                <TabsTrigger value="waiters" className="gap-1.5">
+                  <UserRound className="size-3.5" /> Waiters
                 </TabsTrigger>
                 <TabsTrigger value="zones" className="gap-1.5">
                   <Gauge className="size-3.5" /> Delivery fees
@@ -1047,6 +1052,19 @@ function RestaurantDetailPage() {
                   restaurantName={restaurant.name}
                   canManage={canManage}
                   actor={staff.session?.email ?? null}
+                />
+              </TabsContent>
+
+              <TabsContent value="waiters">
+                <WaitersManager
+                  restaurantId={restaurant.id}
+                  restaurantName={restaurant.name}
+                  canManage={canManage}
+                  actor={{
+                    id: staff.session?.userId ?? null,
+                    email: staff.session?.email ?? null,
+                    name: staff.session?.fullName ?? null,
+                  }}
                 />
               </TabsContent>
 

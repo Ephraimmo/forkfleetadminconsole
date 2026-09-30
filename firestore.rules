@@ -137,8 +137,9 @@ service cloud.firestore {
 
     // A guest's write of the table's `session` (the seating). Within the same
     // seating they may change only their own seat, and never drop an order
-    // from its list. A fresh seating (none yet, or the last one went idle)
-    // holds just them, in the table's own order mode.
+    // from its list or touch who the waiter is. A fresh seating (none yet, or
+    // the last one went idle) holds just them, in the table's own order mode,
+    // with no waiter — only staff assign waiters (waiters.firebase.ts).
     function isGuestSeatingWrite() {
       let before = resource.data;
       let after = request.resource.data;
@@ -160,11 +161,25 @@ service cloud.firestore {
             && s.opened_at == prev.opened_at
             && s.order_mode == prev.order_mode
             && s.guests.diff(prev.guests).affectedKeys().hasOnly([uid])
-            && s.get('order_ids', []).hasAll(prev.get('order_ids', [])))
+            && s.get('order_ids', []).hasAll(prev.get('order_ids', []))
+            && s.get('waiter_id', null) == prev.get('waiter_id', null)
+            && s.get('waiter_name', null) == prev.get('waiter_name', null)
+            && s.get('waiter_assigned_at', null) == prev.get('waiter_assigned_at', null))
           || ((prev == null || s.id != prev.id)
             && s.guests.keys().hasOnly([uid])
-            && (s.order_mode == 'multiple') == (before.get('order_mode', 'single') == 'multiple'))
+            && (s.order_mode == 'multiple') == (before.get('order_mode', 'single') == 'multiple')
+            && s.get('waiter_id', null) == null
+            && s.get('waiter_name', null) == null)
         );
+    }
+
+    // ------------------------------------------------------ waiter rosters
+    // /waiterRosters/{restaurantId}: each waiter's branch, whether they're on
+    // shift, and their last assignment (the round-robin order). Staff of that
+    // restaurant keep it: a waiter going on or off shift, and staff devices
+    // handing seatings to the next waiter. Guests never read it.
+    match /waiterRosters/{restaurantId} {
+      allow read, write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
     }
 
     // ------------------------------------------------ dine-in table QR codes
@@ -316,6 +331,8 @@ service cloud.firestore {
         && table.get('active', true) != false
         && o.dine_in.table_session_id == table.session.id
         && o.dine_in.order_mode == table.session.order_mode
+        // The order's waiter is the seating's (none yet, or whoever staff assigned).
+        && o.dine_in.get('waiter_id', null) == table.session.get('waiter_id', null)
         && orderId in table.session.get('order_ids', []);
     }
 

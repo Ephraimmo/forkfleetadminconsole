@@ -406,9 +406,18 @@ function DineInRow({ order, onOpen }: { order: DispatchOrder; onOpen: () => void
       </TableCell>
       <TableCell>
         <DineInStatusBadge status={order.status} />
+        {order.payment_status === "paid" ? (
+          <p className="mt-1 text-[11px] text-emerald-400">
+            Paid{order.dine_in?.paid_with ? ` · ${order.dine_in.paid_with}` : ""}
+          </p>
+        ) : (
+          !["rejected", "cancelled", "refunded"].includes(order.status) && (
+            <p className="mt-1 text-[11px] text-muted-foreground">Unpaid</p>
+          )
+        )}
       </TableCell>
       <TableCell className={order.dine_in?.waiter_name ? "" : "text-muted-foreground"}>
-        {order.dine_in?.waiter_name ?? "Unassigned"}
+        {order.dine_in?.waiter_name ?? "Waiting for a waiter"}
       </TableCell>
       <TableCell className="whitespace-nowrap text-right text-xs">
         {validDate ? (

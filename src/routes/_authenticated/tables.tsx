@@ -46,6 +46,15 @@ import {
   type TableService,
 } from "@/lib/table-overview";
 import { closeTableSession } from "@/lib/table-sessions.firebase";
+import { useAutoAssignWaiters } from "@/hooks/use-auto-assign-waiters";
+import type { StaffActor } from "@/lib/dine-in";
+import {
+  assignSeatingWaiter,
+  subscribeWaiterRoster,
+  waiterCoversBranch,
+  type RosterWaiter,
+  type WaiterRoster,
+} from "@/lib/waiters.firebase";
 import {
   subscribeTables,
   tableDisplayName,
@@ -106,6 +115,16 @@ function TableOverviewPage() {
     if (!restaurantId) return;
     return subscribeTables(restaurantId, setTables, setTablesError);
   }, [restaurantId]);
+
+  // Waiters on shift, and — while this page is open — handing each new seating
+  // to the next one in turn.
+  const [roster, setRoster] = useState<WaiterRoster | null>(null);
+  useEffect(() => {
+    setRoster(null);
+    if (!restaurantId) return;
+    return subscribeWaiterRoster(restaurantId, setRoster);
+  }, [restaurantId]);
+  useAutoAssignWaiters(restaurantId || null, tables, roster);
 
   // The whole live order book — the overview picks out each table's seating.
   const [orders, setOrders] = useState<DispatchOrder[]>([]);
@@ -219,6 +238,12 @@ function TableOverviewPage() {
                       canManage={canManage}
                       orderNumbers={orderNumbers}
                       ordersById={ordersById}
+                      waiters={roster ? Object.values(roster.waiters) : []}
+                      actor={{
+                        id: staff.session?.userId ?? null,
+                        email: staff.session?.email ?? null,
+                        name: staff.session?.fullName ?? null,
+                      }}
                       onClear={() => setClearing(entry)}
                     />
                   ))}
@@ -250,12 +275,17 @@ function TableCard({
   canManage,
   orderNumbers,
   ordersById,
+  waiters,
+  actor,
   onClear,
 }: {
   entry: TableOverview;
   canManage: boolean;
   orderNumbers: Map<string, string>;
   ordersById: Map<string, DispatchOrder>;
+  /** The restaurant's roster, for reassigning the table. */
+  waiters: RosterWaiter[];
+  actor: StaffActor;
   onClear: () => void;
 }) {
   const { table, status, mode, session } = entry;
@@ -303,6 +333,28 @@ function TableCard({
             <>
               <dt className="text-muted-foreground">Active Order</dt>
               <dd className="font-medium">{entry.table_order?.order_number ?? "—"}</dd>
+            </>
+          )}
+          {table.branch_name && (
+            <>
+              <dt className="text-muted-foreground">Branch</dt>
+              <dd>{table.branch_name}</dd>
+            </>
+          )}
+          {occupied && session && (
+            <>
+              <dt className="text-muted-foreground">Waiter</dt>
+              <dd>
+                <WaiterPicker
+                  table={table}
+                  sessionId={session.id}
+                  waiterId={session.waiter_id}
+                  waiterName={session.waiter_name}
+                  waiters={waiters}
+                  canManage={canManage}
+                  actor={actor}
+                />
+              </dd>
             </>
           )}
           <dt className="text-muted-foreground">Status</dt>
@@ -371,6 +423,73 @@ function TableCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** The seating's waiter, and — for managers — a way to hand the table to someone else. */
+function WaiterPicker({
+  table,
+  sessionId,
+  waiterId,
+  waiterName,
+  waiters,
+  canManage,
+  actor,
+}: {
+  table: RestaurantTable;
+  sessionId: string;
+  waiterId: string | null;
+  waiterName: string | null;
+  waiters: RosterWaiter[];
+  canManage: boolean;
+  actor: StaffActor;
+}) {
+  const [busy, setBusy] = useState(false);
+  const choices = waiters
+    .filter((w) => w.active && waiterCoversBranch(w, table.branch_id))
+    .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+  if (!canManage || choices.length === 0) {
+    return waiterId ? (
+      <span>{waiterName ?? "Waiter"}</span>
+    ) : (
+      <span className="text-amber-300">Waiting for a waiter</span>
+    );
+  }
+  return (
+    <Select
+      value={waiterId ?? ""}
+      disabled={busy}
+      onValueChange={(uid) => {
+        setBusy(true);
+        void assignSeatingWaiter({
+          restaurant_id: table.restaurant_id,
+          table_id: table.id,
+          session_id: sessionId,
+          waiter_id: uid,
+          actor,
+        })
+          .then((o) => {
+            if (o.status === "assigned")
+              toast.success(`${tableDisplayName(table.label)} → ${o.waiter_name}`);
+          })
+          .catch((e: unknown) =>
+            toast.error(e instanceof Error ? e.message : "Could not reassign the table."),
+          )
+          .finally(() => setBusy(false));
+      }}
+    >
+      <SelectTrigger className={`h-7 text-xs ${waiterId ? "" : "text-amber-300"}`}>
+        <SelectValue placeholder="Waiting for a waiter" />
+      </SelectTrigger>
+      <SelectContent>
+        {choices.map((w) => (
+          <SelectItem key={w.uid} value={w.uid}>
+            {w.name}
+            {w.online ? "" : " (offline)"}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

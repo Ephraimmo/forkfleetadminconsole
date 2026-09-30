@@ -2,6 +2,7 @@
 //   waiting for confirmation → Edit order · Confirm order · Reject
 //   confirmed with the table → Edit order · Send to kitchen · Reject
 //   ready (kitchen finished) → Mark as served
+//   any time after confirming, until paid → Take payment (cash, card or EFT)
 //
 // Wrap a page in <DineInActionsProvider> and drop <DineInOrderActions> next
 // to any dine-in order; it shows nothing when the waiter has nothing to do.
@@ -11,7 +12,16 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Ban, ChefHat, CheckCheck, ConciergeBell, Loader2, Pencil, XCircle } from "lucide-react";
+import {
+  Ban,
+  Banknote,
+  ChefHat,
+  CheckCheck,
+  ConciergeBell,
+  Loader2,
+  Pencil,
+  XCircle,
+} from "lucide-react";
 
 import { EditDineInOrderDialog } from "@/components/dine-in/edit-dine-in-order-dialog";
 import { Button } from "@/components/ui/button";
@@ -24,17 +34,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useStaffActor } from "@/hooks/use-staff-actor";
 import { audit } from "@/lib/audit";
 import {
+  canTakeDineInPayment,
+  DINE_IN_PAYMENT_METHODS,
   hasDineInAction,
   isAwaitingWaiterConfirmation,
   isWithWaiter,
   WAITER_CONFIRMED,
+  type DineInPaymentMethod,
+  type StaffActor,
 } from "@/lib/dine-in";
 import {
   confirmDineInOrder,
+  confirmDineInPayment,
   dineInOrderName,
   markDineInOrderServed,
   sendDineInOrderToKitchen,
@@ -47,19 +63,29 @@ type Step = "confirm" | "send" | "serve";
 interface DineInActions {
   edit: (orderId: string) => void;
   reject: (orderId: string) => void;
+  pay: (orderId: string) => void;
   run: (step: Step, order: DispatchOrder) => Promise<void>;
   busyWith: (orderId: string) => Step | null;
 }
 
 const ActionsContext = createContext<DineInActions | null>(null);
 
-export function DineInActionsProvider({ children }: { children: React.ReactNode }) {
-  const actor = useStaffActor();
+export function DineInActionsProvider({
+  children,
+  actor: actorOverride,
+}: {
+  children: React.ReactNode;
+  /** Who is acting — defaults to the signed-in console staff member (the Waiter screen passes the waiter). */
+  actor?: StaffActor;
+}) {
+  const staffActor = useStaffActor();
+  const actor = actorOverride ?? staffActor;
   const [orders, setOrders] = useState<DispatchOrder[]>([]);
   useEffect(() => onOrdersChanged(setOrders), []);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [payingId, setPayingId] = useState<string | null>(null);
   const [busy, setBusy] = useState<ReadonlyMap<string, Step>>(new Map());
 
   const run = useCallback(
@@ -132,6 +158,7 @@ export function DineInActionsProvider({ children }: { children: React.ReactNode 
     () => ({
       edit: setEditingId,
       reject: setRejectingId,
+      pay: setPayingId,
       run,
       busyWith: (id) => busy.get(id) ?? null,
     }),
@@ -149,7 +176,12 @@ export function DineInActionsProvider({ children }: { children: React.ReactNode 
         actor={actor}
         onClose={() => setEditingId(null)}
       />
-      <RejectDineInOrderDialog order={find(rejectingId)} onClose={() => setRejectingId(null)} />
+      <RejectDineInOrderDialog
+        order={find(rejectingId)}
+        actor={actor}
+        onClose={() => setRejectingId(null)}
+      />
+      <TakePaymentDialog order={find(payingId)} actor={actor} onClose={() => setPayingId(null)} />
     </ActionsContext.Provider>
   );
 }
@@ -175,13 +207,34 @@ export function DineInOrderActions({
   onAction?: () => void;
 }) {
   const actions = useDineInActions();
-  if (!hasDineInAction(order)) return null;
+  const payable = canTakeDineInPayment(order);
+  if (!hasDineInAction(order) && !payable) return null;
   const busy = actions.busyWith(order.id);
   const spinner = <Loader2 className="mr-1 size-3.5 animate-spin" />;
+  const payButton = payable ? (
+    <Button
+      size="sm"
+      variant="outline"
+      className="border-emerald-500/40 text-emerald-300 hover:text-emerald-200"
+      onClick={() => {
+        onAction?.();
+        actions.pay(order.id);
+      }}
+      disabled={busy !== null}
+      title="Record that the table has paid"
+    >
+      <Banknote className="mr-1 size-3.5" /> {compact ? "Payment" : "Take payment"}
+    </Button>
+  ) : null;
+
+  if (!hasDineInAction(order)) {
+    return <div className={`flex flex-wrap gap-2 ${className ?? ""}`}>{payButton}</div>;
+  }
 
   if (order.status === "ready") {
     return (
       <div className={`flex flex-wrap gap-2 ${className ?? ""}`}>
+        {payButton}
         <Button
           size="sm"
           onClick={() => void actions.run("serve", order)}
@@ -231,6 +284,7 @@ export function DineInOrderActions({
           {compact ? "Send" : "Send to kitchen"}
         </Button>
       )}
+      {payButton}
       <Button
         size="sm"
         variant="ghost"
@@ -249,9 +303,11 @@ export function DineInOrderActions({
 
 function RejectDineInOrderDialog({
   order,
+  actor,
   onClose,
 }: {
   order: DispatchOrder | null;
+  actor: StaffActor;
   onClose: () => void;
 }) {
   const [reason, setReason] = useState("");
@@ -266,7 +322,7 @@ function RejectDineInOrderDialog({
     if (!order) return;
     setBusy(true);
     try {
-      await rejectOrder({ orderId: order.id, reason });
+      await rejectOrder({ orderId: order.id, reason, actor: actor.email ?? actor.name ?? null });
       toast.success(`${dineInOrderName(order)} rejected.`);
       onClose();
     } catch (e) {
@@ -319,6 +375,104 @@ function RejectDineInOrderDialog({
               <XCircle className="mr-1.5 size-4" />
             )}
             Reject order
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function TakePaymentDialog({
+  order,
+  actor,
+  onClose,
+}: {
+  order: DispatchOrder | null;
+  actor: StaffActor;
+  onClose: () => void;
+}) {
+  const [method, setMethod] = useState<DineInPaymentMethod>("cash");
+  const [busy, setBusy] = useState(false);
+  const open = order !== null;
+  useEffect(() => {
+    if (open) setMethod("cash");
+  }, [open]);
+  const payable = order ? canTakeDineInPayment(order) : false;
+
+  async function submit() {
+    if (!order) return;
+    setBusy(true);
+    try {
+      const paid = await confirmDineInPayment({ order_id: order.id, method, actor });
+      audit({
+        action: "order.dine_in.paid",
+        entityType: "order",
+        entityId: order.id,
+        before: { payment_status: order.payment_status },
+        after: { payment_status: "paid", method, amount: paid.amount },
+      });
+      toast.success(`${dineInOrderName(order)} paid — R ${paid.amount.toFixed(2)}.`);
+      onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not record the payment.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && !busy && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Banknote className="size-4 text-emerald-400" /> Take payment
+          </DialogTitle>
+          <DialogDescription>
+            {order ? dineInOrderName(order) : ""} — confirm the table has paid.
+          </DialogDescription>
+        </DialogHeader>
+        {order && (
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/30 p-3 text-center">
+              <p className="text-xs text-muted-foreground">Amount due</p>
+              <p className="text-2xl font-semibold tabular-nums">R {order.total.toFixed(2)}</p>
+            </div>
+            <RadioGroup
+              value={method}
+              onValueChange={(v) => setMethod(v as DineInPaymentMethod)}
+              className="gap-2"
+            >
+              {DINE_IN_PAYMENT_METHODS.map((m) => (
+                <Label
+                  key={m.id}
+                  htmlFor={`pay-${m.id}`}
+                  className={`flex cursor-pointer items-center gap-3 rounded-md border p-2.5 font-normal ${
+                    method === m.id ? "border-primary/40 bg-primary/5" : ""
+                  }`}
+                >
+                  <RadioGroupItem id={`pay-${m.id}`} value={m.id} />
+                  {m.label}
+                </Label>
+              ))}
+            </RadioGroup>
+            {!payable && (
+              <p className="text-xs text-destructive">
+                This order can&apos;t take a payment right now.
+              </p>
+            )}
+          </div>
+        )}
+        <DialogFooter className="gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={busy || !payable}>
+            {busy ? (
+              <Loader2 className="mr-1.5 size-4 animate-spin" />
+            ) : (
+              <CheckCheck className="mr-1.5 size-4" />
+            )}
+            Confirm payment
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -27,7 +27,8 @@ This is a real sub-collection, with one document per table.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `label` | string | Table number or name (`"12"`, `"Patio 3"`). Unique per restaurant, case/space-insensitive, and `"Table 12"` counts as `"12"`. |
+| `label` | string | Table number or name (`"12"`, `"Patio 3"`). Unique within its branch, case/space-insensitive, and `"Table 12"` counts as `"12"`. |
+| `branch_id` / `branch_name` | string \| null | The branch the table is at (from `restaurantBranches/{restaurantId}`). Required when the restaurant has branches; decides which waiters serve it (§1.7). |
 | `capacity` | integer 1–50 | Seats. **Independent of `order_mode`.** |
 | `active` | boolean | `false` = listed but not taking orders. Missing = `true`. |
 | `order_mode` | `"single"` \| `"multiple"` | Missing or unrecognised = **`"single"`**. |
@@ -152,6 +153,36 @@ saves the guest's pass. Everything a guest may read or write is scoped to it (§
   token, which revokes every pass issued from it**: those guests can no longer read the table or
   order there until they scan the new code.
 - One pass per guest. Scanning another table's code replaces it, so the guest moves tables.
+
+### 1.7 Waiters — `restaurantUsers/{uid}` and `waiterRosters/{restaurantId}`
+
+A waiter is a restaurant login (`restaurantUsers/{uid}`, role `"waiter"`) with a `branch_id`:
+one branch, or `null` for every branch of the restaurant. Admins create them on the
+restaurant's **Waiters** tab. `waiterRosters/{restaurantId}` holds what assignment needs:
+
+```ts
+{
+  restaurant_id: string;
+  waiters: {
+    [uid: string]: {
+      uid: string; name: string;
+      branch_id: string | null; branch_name: string | null;
+      active: boolean;             // false = deactivated, gets no tables
+      online: boolean;             // on shift
+      online_since: string | null;
+      last_assigned_at: string | null;   // round-robin order
+      assigned_count: number;
+    };
+  };
+}
+```
+
+The roster holds no emails or phone numbers. Staff of that restaurant can read and write it;
+guests can't read it at all.
+
+A seating records its waiter as `session.waiter_id`, `session.waiter_name` and
+`session.waiter_assigned_at`, and every open order at it carries `dine_in.waiter_id` and
+`dine_in.waiter_name`.
 
 ---
 
@@ -436,6 +467,43 @@ confirmed and sent. So it receives the final confirmed order and nothing else.
 The Restaurant Admin app should raise the same alert from the same data. Nothing extra is written
 to the database; the alert is worked out from the live order book.
 
+### 6.4 Payment
+
+`confirmDineInPayment({ order_id, method, actor })` records that the table paid its waiter:
+`"cash"`, `"card"` or `"eft"`.
+
+- **When:** any time after the order was confirmed with the table (before or after the kitchen,
+  before or after serving), once only.
+- **What it writes:** `payment_status: "paid"`, `payment_method`, the receipt in `payment` (the
+  same shape as every other paid order), `dine_in.paid_at`, `paid_by`, `paid_by_id` and
+  `paid_with`, plus a line in the history.
+- **Afterwards:** the order can't be edited, so what was paid stays what was ordered.
+
+### 6.5 Waiter assignment — `src/lib/waiters.firebase.ts`
+
+- **Who gets a new seating:** the next **online, active** waiter who covers the table's branch,
+  meaning the one with the oldest `last_assigned_at`. So tables go round the waiters in turn, and
+  a branch with a single waiter on shift gets every table.
+- **For how long:** the waiter keeps the table for the whole seating. Every order the table
+  places goes to them.
+- **When nobody is online:** the seating waits unassigned and goes to the first waiter who comes
+  online.
+- **Going offline or being deactivated:** the waiter's open tables pass to the next online
+  waiter, or wait if nobody else is on.
+- **Managers** can move a table to another waiter from the Table overview.
+- **Where it runs:** on staff devices only (`useAutoAssignWaiters()` on every online waiter's
+  Waiter screen and on the console's Table overview). Each assignment is one transaction, so
+  several devices racing assign a seating exactly once.
+
+**The Waiter screen** (`/waiter`) is where waiters work. They sign in with their waiter login and
+switch **Online** when their shift starts. From then on they see only their own tables, and for
+each order they can:
+- edit, confirm, send to the kitchen or reject it;
+- serve it once the kitchen marks it ready (they get an Order Ready alert);
+- take payment.
+
+It also shows the calls from their tables, and tables still waiting for a waiter.
+
 ---
 
 ## 7. Known gaps (not built yet)
@@ -463,8 +531,11 @@ to the database; the alert is worked out from the live order book.
     status);
   - use the §6 actions rather than writing `status` itself;
   - show the Order Ready alert (§6.3) and `waiterRequests`.
-- **Waiter assignment** is limited to confirming and serving: the first waiter to confirm or serve
-  an order becomes its waiter.
-  - There's no "reassign waiter" action.
-  - Order Ready alerts go to every member of staff who can see orders, not only the order's waiter.
-  - Accepting a waiter request doesn't assign a waiter.
+- **Waiter assignment** runs on staff devices (§6.5):
+  - A new seating is assigned as soon as any online waiter's Waiter screen, or a Table overview,
+    is open. If none is open, it's assigned when one opens. A Cloud Function would make this
+    independent of open screens.
+  - Any staff member of the restaurant can edit its whole roster, not only their own line.
+  - The Waiter screen shares the browser's Firebase sign-in with the console, so use it on the
+    waiter's own device.
+  - Accepting a waiter request doesn't change the table's waiter.

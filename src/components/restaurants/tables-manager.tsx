@@ -35,6 +35,14 @@ import {
 } from "@/components/ui/table";
 import { TableQrDialog } from "@/components/restaurants/table-qr-dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { subscribeRestaurantBranches, type RestaurantBranch } from "@/lib/branches.firebase";
+import {
   DEFAULT_ORDER_MODE,
   DEFAULT_TABLE_CAPACITY,
   isSessionIdle,
@@ -77,6 +85,8 @@ export function TablesManager({
     return subscribeTables(restaurantId, setTables, setLoadError);
   }, [restaurantId]);
   useEffect(() => subscribeCustomerAppUrl(setCustomerAppUrl), []);
+  const [branches, setBranches] = useState<RestaurantBranch[]>([]);
+  useEffect(() => subscribeRestaurantBranches(restaurantId, setBranches), [restaurantId]);
 
   const list = tables ?? [];
   const editingId = formFor && formFor !== "new" ? formFor : null;
@@ -134,6 +144,7 @@ export function TablesManager({
                   <TableHeader>
                     <TableRow>
                       <TableHead>Table</TableHead>
+                      {branches.length > 0 && <TableHead>Branch</TableHead>}
                       <TableHead>Capacity</TableHead>
                       <TableHead>Order mode</TableHead>
                       <TableHead>Status</TableHead>
@@ -147,6 +158,11 @@ export function TablesManager({
                         <TableCell className="font-medium">
                           {tableDisplayName(table.label)}
                         </TableCell>
+                        {branches.length > 0 && (
+                          <TableCell className="text-muted-foreground">
+                            {table.branch_name ?? (table.branch_id ? table.branch_id : "—")}
+                          </TableCell>
+                        )}
                         <TableCell className="tabular-nums text-muted-foreground">
                           <span className="inline-flex items-center gap-1.5">
                             <Users className="size-3.5" /> {table.capacity}
@@ -195,7 +211,7 @@ export function TablesManager({
                     {list.length === 0 && (
                       <TableRow>
                         <TableCell
-                          colSpan={6}
+                          colSpan={branches.length > 0 ? 7 : 6}
                           className="py-10 text-center text-sm text-muted-foreground"
                         >
                           No tables yet.
@@ -216,6 +232,7 @@ export function TablesManager({
         tableId={editingId}
         table={editing}
         tables={list}
+        branches={branches}
         restaurantId={restaurantId}
         actor={actor}
         onClose={() => setFormFor(null)}
@@ -252,6 +269,7 @@ function TableFormDialog({
   tableId,
   table,
   tables,
+  branches,
   restaurantId,
   actor,
   onClose,
@@ -263,6 +281,8 @@ function TableFormDialog({
   /** The edited table's saved settings (null if it has just been removed). */
   table: RestaurantTable | null;
   tables: RestaurantTable[];
+  /** The restaurant's branches; when it has any, every table is at one of them. */
+  branches: RestaurantBranch[];
   restaurantId: string;
   actor: string | null;
   onClose: () => void;
@@ -271,6 +291,7 @@ function TableFormDialog({
   const [capacity, setCapacity] = useState(String(DEFAULT_TABLE_CAPACITY));
   const [orderMode, setOrderMode] = useState<TableOrderMode>(DEFAULT_ORDER_MODE);
   const [active, setActive] = useState(true);
+  const [branchId, setBranchId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // Guests seated right now keep their seating's mode until the table is cleared.
@@ -283,6 +304,7 @@ function TableFormDialog({
     setCapacity(String(table?.capacity ?? DEFAULT_TABLE_CAPACITY));
     setOrderMode(table?.order_mode ?? DEFAULT_ORDER_MODE);
     setActive(table?.active ?? true);
+    setBranchId(table?.branch_id ?? (branches.length === 1 ? branches[0]!.id : ""));
     setError(null);
   }, [open, tableId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -293,7 +315,13 @@ function TableFormDialog({
       capacity: capacity.trim() === "" ? Number.NaN : Number(capacity),
       active,
       order_mode: orderMode,
+      branch_id: branchId || null,
+      branch_name: branches.find((b) => b.id === branchId)?.name ?? null,
     };
+    if (branches.length > 0 && !branchId) {
+      setError("Choose the branch this table is at.");
+      return;
+    }
     const problem = validateTableConfig(
       config,
       tables.filter((t) => t.id !== tableId),
@@ -354,6 +382,27 @@ function TableFormDialog({
               />
             </div>
           </div>
+
+          {branches.length > 0 && (
+            <div className="space-y-1.5">
+              <Label htmlFor="table-branch">Branch</Label>
+              <Select value={branchId} onValueChange={setBranchId}>
+                <SelectTrigger id="table-branch">
+                  <SelectValue placeholder="Choose a branch" />
+                </SelectTrigger>
+                <SelectContent>
+                  {branches.map((b) => (
+                    <SelectItem key={b.id} value={b.id}>
+                      {b.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Guests at this table are served by the waiters who work at this branch.
+              </p>
+            </div>
+          )}
 
           <fieldset className="space-y-2">
             <legend className="mb-1.5 text-sm font-medium">Order mode</legend>

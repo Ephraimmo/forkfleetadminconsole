@@ -370,3 +370,28 @@ describe("helpers", () => {
     }
   });
 });
+
+describe("tables at branches", () => {
+  const table = (label: string, branch: { branch_id: string; branch_name: string }) =>
+    saveTable({ restaurant_id: RID, label, capacity: 4, active: true, order_mode: "single", ...branch });
+  const sandton = { branch_id: "brn_sandton", branch_name: "Sandton" };
+  const rosebank = { branch_id: "brn_rosebank", branch_name: "Rosebank" };
+
+  it("lets two branches each have a Table 12, but not one branch twice", async () => {
+    await table("12", sandton);
+    await expect(table("12", rosebank)).resolves.toMatchObject({ branch_id: "brn_rosebank" });
+    await expect(table("Table 12", sandton)).rejects.toThrow("Table 12 already exists at this branch");
+    const saved = await listTables(RID);
+    expect(saved.map((t) => [t.label, t.branch_name])).toEqual([
+      ["12", "Sandton"],
+      ["12", "Rosebank"],
+    ]);
+  });
+
+  it("keeps a table's branch when an edit doesn't mention it", async () => {
+    const created = await table("7", sandton);
+    await saveTable({ ...created, capacity: 6, restaurant_id: RID, id: created.id, branch_id: undefined as never });
+    const [saved] = await listTables(RID);
+    expect(saved).toMatchObject({ capacity: 6, branch_id: "brn_sandton", branch_name: "Sandton" });
+  });
+});

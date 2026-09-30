@@ -531,9 +531,14 @@ export async function acceptOrder(arg: { orderId: string } | { data: { orderId: 
 }
 
 /** Reject a pending order with a mandatory reason (shown to the customer). */
-export async function rejectOrder(
-  arg: { orderId: string; reason: string } | { data: { orderId: string; reason: string } },
-) {
+type RejectInput = {
+  orderId: string;
+  reason: string;
+  /** Who is rejecting (e.g. a waiter on the Waiter screen); defaults to the console user. */
+  actor?: string | null;
+};
+
+export async function rejectOrder(arg: RejectInput | { data: RejectInput }) {
   const input = unwrap(arg)!;
   const reason = (input.reason ?? "").trim();
   if (!reason) throw new Error("A rejection reason is required.");
@@ -544,14 +549,15 @@ export async function rejectOrder(
   if (!rejectable) {
     throw new Error(`Cannot reject an order that is already ${order.status.replace(/_/g, " ")}`);
   }
-  await rejectFirebaseOrder({ orderId: order.id, reason, actor: currentActor() });
+  const actor = input.actor ?? currentActor();
+  await rejectFirebaseOrder({ orderId: order.id, reason, actor });
   logAudit({
     action: "order.status.rejected",
     entityType: "order",
     entityId: order.id,
     before: { status: order.status },
     after: { status: "rejected", reason },
-    actorEmail: currentActor(),
+    actorEmail: actor,
   });
   return { ok: true };
 }

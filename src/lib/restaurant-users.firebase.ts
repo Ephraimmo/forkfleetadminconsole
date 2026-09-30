@@ -42,6 +42,8 @@ interface RestaurantUserRaw {
   job_title?: string | null;
   phone?: string | null;
   restaurant_id?: string | null;
+  /** Branch the user works at; null/missing = every branch of the restaurant. */
+  branch_id?: string | null;
   role?: string | null;
   permissions?: Record<string, boolean> | null;
   status?: string | null;
@@ -60,6 +62,8 @@ export interface RestaurantUserRecord {
   job_title: string | null;
   phone: string | null;
   restaurant_id: string;
+  /** Branch the user works at; null = every branch of the restaurant. */
+  branch_id: string | null;
   role: RestaurantRole;
   permissions: string[];
   status: RestaurantUserStatus;
@@ -202,6 +206,7 @@ export function normalizeRestaurantUser(
     job_title: raw.job_title ?? null,
     phone: raw.phone ?? null,
     restaurant_id: restaurantId,
+    branch_id: String(raw.branch_id ?? "").trim() || null,
     role,
     permissions: mapToPermissions(raw.permissions),
     status: raw.status === "suspended" ? "suspended" : "active",
@@ -219,6 +224,7 @@ function toRawRestaurantUser(record: RestaurantUserRecord): Record<string, impor
     job_title: record.job_title,
     phone: record.phone,
     restaurant_id: record.restaurant_id,
+    branch_id: record.branch_id,
     role: record.role,
     permissions: permissionsToMap(record.permissions),
     status: record.status,
@@ -258,6 +264,8 @@ export interface CreateRestaurantUserInput {
   jobTitle: string | null;
   phone: string | null;
   restaurantId: string;
+  /** Branch the user works at; null/omitted = every branch. */
+  branchId?: string | null;
   role: RestaurantRole;
   permissions?: string[];
   actorEmail: string | null;
@@ -323,6 +331,7 @@ export async function createRestaurantUser(
       job_title: input.jobTitle?.trim() ? input.jobTitle.trim() : null,
       phone: input.phone?.trim() ? input.phone.trim() : null,
       restaurant_id: restaurantId,
+      branch_id: input.branchId?.trim() || null,
       role: input.role,
       permissions,
       status: "active",
@@ -613,6 +622,42 @@ export async function signInRestaurantUserWithFirebase(input: {
   } catch (err) {
     return { ok: false, error: "invalid_credentials", message: friendlyAuthError(err) };
   }
+}
+
+/**
+ * Follow who is signed in to this browser, as a restaurant user (null when
+ * nobody is, or the account has no restaurant access). Used by the Waiter screen.
+ */
+export function watchRestaurantUser(
+  cb: (user: RestaurantUserRecord | null, authUid: string | null) => void,
+): () => void {
+  if (!isFirebaseAvailable()) {
+    cb(null, null);
+    return () => {};
+  }
+  let cancelled = false;
+  let unsub: (() => void) | null = null;
+  void (async () => {
+    const { getAuth, onAuthStateChanged } = await import("firebase/auth");
+    const auth = getAuth(await getMainApp());
+    if (cancelled) return;
+    unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      if (!firebaseUser) return cb(null, null);
+      void fetchRestaurantUserByUid(firebaseUser.uid)
+        .then((record) => !cancelled && cb(record, firebaseUser.uid))
+        .catch(() => !cancelled && cb(null, firebaseUser.uid));
+    });
+  })();
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
+}
+
+export async function signOutRestaurantUser(): Promise<void> {
+  if (!isFirebaseAvailable()) return;
+  const { getAuth, signOut } = await import("firebase/auth");
+  await signOut(getAuth(await getMainApp()));
 }
 
 export async function refreshRestaurantUserSession(

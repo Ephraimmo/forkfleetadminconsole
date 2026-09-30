@@ -113,6 +113,7 @@ const ROLE_CATALOG: { role: RestaurantRole; label: string; blurb: string }[] = [
   { role: "kitchen_staff", label: "Kitchen Staff", blurb: "Order preparation only" },
   { role: "cashier", label: "Cashier", blurb: "Counter orders, tables and customers" },
   { role: "inventory_manager", label: "Inventory Manager", blurb: "Stock levels and purchasing" },
+  { role: "waiter", label: "Waiter", blurb: "Serves dine-in tables — add waiters on the restaurant's Waiters tab" },
 ];
 
 const AVATAR_COLORS = [

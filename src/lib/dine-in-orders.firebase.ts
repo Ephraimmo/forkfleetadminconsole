@@ -30,14 +30,17 @@ import {
   type FsTransaction,
 } from "@/lib/firestore";
 import {
+  DINE_IN_PAYMENT_METHODS,
   dineInError,
   isAwaitingWaiterConfirmation,
   isWithWaiter,
   staffActorLabel,
   WAITER_CONFIRMED,
   WAITING_FOR_WAITER_CONFIRMATION,
+  type DineInPaymentMethod,
   type StaffActor,
 } from "@/lib/dine-in";
+import { receiptNumberFor, type OrderPaymentEvidence } from "@/lib/payments.firebase";
 import {
   applyOrderEdit,
   MAX_TEXT,
@@ -145,6 +148,13 @@ async function readForStep(
   }
   if (!allows(step, order.status)) {
     throw dineInError("dine-in/order-locked", lockedReason(order, step));
+  }
+  // What was paid must stay what was ordered.
+  if (step === "edit" && order.payment_status === "paid") {
+    throw dineInError(
+      "dine-in/order-locked",
+      `Order ${order.order_number} can't be edited — the table has already paid for it.`,
+    );
   }
   return order;
 }
@@ -436,6 +446,91 @@ export async function editDineInOrder(
       edit: record,
       confirmation_withdrawn: withdrawn,
     };
+  });
+}
+
+/**
+ * Confirm the table has paid for a dine-in order — cash, card or EFT, taken by
+ * the waiter. Allowed any time after the order was confirmed with the table
+ * (before or after the kitchen, before or after serving), once. Records the
+ * payment like any other paid order (`payment_status`, and the receipt in
+ * `payment`) and on the order's history; the order can't be edited afterwards.
+ */
+export async function confirmDineInPayment(input: {
+  order_id: string;
+  method: DineInPaymentMethod;
+  actor: StaffActor;
+}): Promise<{ order_number: string; amount: number }> {
+  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
+  if (!DINE_IN_PAYMENT_METHODS.some((m) => m.id === input.method)) {
+    throw new Error("Choose how the table paid.");
+  }
+  return fsTransaction(async (tx) => {
+    if (!SAFE_ID.test(input.order_id)) {
+      throw dineInError("dine-in/order-not-found", "That order doesn't exist.");
+    }
+    const order = await tx.get<StoredOrder>(orderPath(input.order_id));
+    if (!order) throw dineInError("dine-in/order-not-found", "That order doesn't exist.");
+    const n = order.order_number;
+    if (orderType(order) !== "dine_in") {
+      throw dineInError("dine-in/order-locked", "Only dine-in orders are paid to a waiter.");
+    }
+    if (order.payment_status === "paid") {
+      throw dineInError("dine-in/order-locked", `Order ${n} has already been paid.`);
+    }
+    const s = order.status as string;
+    if (s === "rejected" || s === "cancelled" || s === "refunded") {
+      throw dineInError("dine-in/order-locked", `Order ${n} was ${s} — there's nothing to pay.`);
+    }
+    const dineIn = order.dine_in ?? {};
+    if (isAwaitingWaiterConfirmation(s) || !str(dineIn.confirmed_at)) {
+      throw dineInError(
+        "dine-in/order-locked",
+        `Confirm order ${n} with the table before taking payment.`,
+      );
+    }
+
+    const ts = new Date().toISOString();
+    const who = staffActorLabel(input.actor);
+    const amount = Number(order.total) || 0;
+    const label = DINE_IN_PAYMENT_METHODS.find((m) => m.id === input.method)!.label.toLowerCase();
+    const paid = event(
+      "note",
+      `Paid R ${amount.toFixed(2)} by ${label} — taken by ${who}`,
+      who,
+      ts,
+    );
+    const evidence: OrderPaymentEvidence = {
+      order_id: order.id,
+      method: input.method,
+      status: "paid",
+      amount,
+      currency: "ZAR",
+      receipt_number: receiptNumberFor(n),
+      reference: null,
+      gateway: null,
+      proof_url: null,
+      card_brand: null,
+      card_last4: null,
+      paid_at: ts,
+      recorded_by: who,
+      rejection_reason: null,
+      reviewed_by: who,
+      reviewed_at: ts,
+      updated_at: ts,
+    };
+    tx.update(orderPath(order.id), {
+      payment_status: "paid",
+      payment_method: input.method,
+      payment: w(evidence),
+      "dine_in/paid_at": ts,
+      "dine_in/paid_by": who,
+      "dine_in/paid_by_id": str(input.actor.id) || str(input.actor.email) || null,
+      "dine_in/paid_with": input.method,
+      [`timeline/${paid.id}`]: w(paid),
+      updated_at: ts,
+    });
+    return { order_number: n, amount };
   });
 }
 

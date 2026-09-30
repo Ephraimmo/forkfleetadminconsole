@@ -9,7 +9,8 @@ export type RestaurantRole =
   | "kitchen_manager"
   | "kitchen_staff"
   | "cashier"
-  | "inventory_manager";
+  | "inventory_manager"
+  | "waiter";
 
 export const RESTAURANT_ROLES: RestaurantRole[] = [
   "restaurant_owner",
@@ -19,6 +20,7 @@ export const RESTAURANT_ROLES: RestaurantRole[] = [
   "kitchen_staff",
   "cashier",
   "inventory_manager",
+  "waiter",
 ];
 
 export interface RestaurantPermission {
@@ -286,6 +288,8 @@ grant("inventory_manager", [
   "rm.reports.view",
   "rm.orders.view",
 ]);
+// Serves dine-in tables: edits, confirms and sends orders, serves them and takes payment.
+grant("waiter", ["rm.orders.view", "rm.orders.manage", "rm.tables.view", "rm.menu.view"]);
 
 export const RESTAURANT_ROLE_PERMISSIONS: RestaurantRolePermission[] = entries;
 
@@ -347,6 +351,7 @@ export const RESTAURANT_ROLE_LABELS: Record<RestaurantRole, string> = {
   kitchen_staff: "Kitchen Staff",
   cashier: "Cashier",
   inventory_manager: "Inventory Manager",
+  waiter: "Waiter",
 };
 
 export function restaurantRoleLabel(role: RestaurantRole): string {

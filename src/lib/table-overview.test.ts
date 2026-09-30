@@ -26,6 +26,9 @@ function session(overrides: Partial<TableSession> = {}): TableSession {
     order_count: 0,
     order_ids: [],
     guests: {},
+    waiter_id: null,
+    waiter_name: null,
+    waiter_assigned_at: null,
     ...overrides,
   };
 }
@@ -35,6 +38,8 @@ function table(overrides: Partial<RestaurantTable> = {}): RestaurantTable {
     id: "t12",
     restaurant_id: "rst-1",
     label: "12",
+    branch_id: null,
+    branch_name: null,
     capacity: 4,
     active: true,
     order_mode: "multiple",
@@ -89,6 +94,10 @@ function order(
       served_at: null,
       served_by: null,
       served_by_id: null,
+      paid_at: null,
+      paid_by: null,
+      paid_by_id: null,
+      paid_with: null,
     },
     items: (overrides.items ?? [["Dish", 1]]).map(([item_name, quantity]) => ({
       item_name,

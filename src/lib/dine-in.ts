@@ -114,6 +114,43 @@ export interface DineInOrderInfo {
   served_at: string | null;
   served_by: string | null;
   served_by_id: string | null;
+  /** When a waiter confirmed the table had paid, how, and who took it. */
+  paid_at: string | null;
+  paid_by: string | null;
+  paid_by_id: string | null;
+  paid_with: DineInPaymentMethod | null;
+}
+
+/** How a table paid its waiter. */
+export type DineInPaymentMethod = "cash" | "card" | "eft";
+
+export const DINE_IN_PAYMENT_METHODS: { id: DineInPaymentMethod; label: string }[] = [
+  { id: "cash", label: "Cash" },
+  { id: "card", label: "Card" },
+  { id: "eft", label: "EFT / bank transfer" },
+];
+
+const ENDED_STATUSES = ["rejected", "cancelled", "refunded"];
+
+/**
+ * Whether a waiter can record payment for this dine-in order now: any time
+ * after it has been confirmed with the table (before or after the kitchen,
+ * before or after serving) until it's paid — never while it's still waiting
+ * for confirmation, and never on a rejected or cancelled order.
+ */
+export function canTakeDineInPayment(order: {
+  order_type: string;
+  status: string;
+  payment_status: string;
+  dine_in: Pick<DineInOrderInfo, "confirmed_at"> | null;
+}): boolean {
+  return (
+    order.order_type === "dine_in" &&
+    order.payment_status !== "paid" &&
+    !ENDED_STATUSES.includes(order.status) &&
+    !isAwaitingWaiterConfirmation(order.status) &&
+    Boolean(order.dine_in?.confirmed_at)
+  );
 }
 
 export interface DineInContributor {
@@ -152,6 +189,12 @@ export function normalizeDineIn(raw: unknown): DineInOrderInfo | null {
     served_at: str(r["served_at"]) || null,
     served_by: str(r["served_by"]) || null,
     served_by_id: str(r["served_by_id"]) || null,
+    paid_at: str(r["paid_at"]) || null,
+    paid_by: str(r["paid_by"]) || null,
+    paid_by_id: str(r["paid_by_id"]) || null,
+    paid_with: DINE_IN_PAYMENT_METHODS.some((m) => m.id === r["paid_with"])
+      ? (r["paid_with"] as DineInPaymentMethod)
+      : null,
   };
 }
 

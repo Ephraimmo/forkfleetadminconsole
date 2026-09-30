@@ -29,6 +29,10 @@ function dineIn(partial: Partial<DineInOrderInfo> = {}): DineInOrderInfo {
     served_at: null,
     served_by: null,
     served_by_id: null,
+    paid_at: null,
+    paid_by: null,
+    paid_by_id: null,
+    paid_with: null,
     ...partial,
   };
 }
@@ -94,6 +98,10 @@ describe("dine-in orders extend the existing order record", () => {
       served_at: null,
       served_by: null,
       served_by_id: null,
+      paid_at: null,
+      paid_by: null,
+      paid_by_id: null,
+      paid_with: null,
     });
   });
 
