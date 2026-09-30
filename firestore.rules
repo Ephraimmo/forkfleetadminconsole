@@ -56,6 +56,37 @@ service cloud.firestore {
       return signedIn() && resource.data.driver_id == request.auth.uid;
     }
 
+    // --------------------------------------------------- dine-in guests (QR)
+    // A guest who scans a table's QR code signs in (anonymous auth is enough)
+    // and saves a guest pass at /dineInGuests/{their uid}: the token they
+    // scanned and the restaurant + table it points to. Saving it proves they
+    // hold that table's current code. Everything a guest may read or write
+    // below is scoped to their pass, and only while its token is still live:
+    // regenerating a table's QR code deletes the old token, which revokes
+    // every pass issued from it. See docs/DINE_IN_TABLES_QR_HANDOVER.md.
+    function guestPass() {
+      return get(/databases/$(database)/documents/dineInGuests/$(request.auth.uid)).data;
+    }
+
+    function hasLiveGuestPass() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/dineInGuests/$(request.auth.uid))
+        && exists(/databases/$(database)/documents/tableQrTokens/$(guestPass().token));
+    }
+
+    function isGuestAtRestaurant(restaurantId) {
+      return hasLiveGuestPass() && guestPass().restaurant_id == restaurantId;
+    }
+
+    function isGuestAtTable(restaurantId, tableId) {
+      return isGuestAtRestaurant(restaurantId) && guestPass().table_id == tableId;
+    }
+
+    /** The guest's table as it will be once this write (and its transaction) lands. */
+    function tableAfter(restaurantId, tableId) {
+      return getAfter(/databases/$(database)/documents/restaurants/$(restaurantId)/tables/$(tableId)).data;
+    }
+
     // ------------------------------------------------------------- accounts
     match /staffUsers/{uid} {
       // Bootstrap: the very first staff account may create itself as super_admin.
@@ -87,14 +118,54 @@ service cloud.firestore {
     // -------------------------------------------------------- restaurants
     match /restaurants/{restaurantId} {
       allow read: if isPlatformAdmin() || isRestaurantMember(restaurantId);
+      // A dine-in guest may read the restaurant they're seated at (its name,
+      // cover image and currency head the menu).
+      allow get: if isGuestAtRestaurant(restaurantId);
       allow write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
       match /{document=**} {
         allow read, write: if isPlatformAdmin() || isRestaurantMember(restaurantId);
       }
+
+      // Dine-in tables (also covered by the recursive match above). A guest
+      // may read the table their pass is for, and write its seating when
+      // they order or call a waiter — nothing else on the table.
+      match /tables/{tableId} {
+        allow get: if isGuestAtTable(restaurantId, tableId);
+        allow update: if isGuestAtTable(restaurantId, tableId) && isGuestSeatingWrite();
+      }
     }
 
-    // Dine-in tables live at /restaurants/{id}/tables/{tableId} and are covered
-    // by the recursive match above.
+    // A guest's write of the table's `session` (the seating). Within the same
+    // seating they may change only their own seat, and never drop an order
+    // from its list. A fresh seating (none yet, or the last one went idle)
+    // holds just them, in the table's own order mode.
+    function isGuestSeatingWrite() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let s = after.session;
+      let uid = request.auth.uid;
+      let prev = before.get('session', null);
+      return after.diff(before).affectedKeys().hasOnly(['session'])
+        && before.get('active', true) != false
+        && s is map
+        && s.id is string
+        && s.opened_at is string
+        && s.order_mode in ['single', 'multiple']
+        && s.guests is map
+        && uid in s.guests
+        && s.get('order_ids', []) is list
+        && (
+          (prev is map
+            && s.id == prev.id
+            && s.opened_at == prev.opened_at
+            && s.order_mode == prev.order_mode
+            && s.guests.diff(prev.guests).affectedKeys().hasOnly([uid])
+            && s.get('order_ids', []).hasAll(prev.get('order_ids', [])))
+          || ((prev == null || s.id != prev.id)
+            && s.guests.keys().hasOnly([uid])
+            && (s.order_mode == 'multiple') == (before.get('order_mode', 'single') == 'multiple'))
+        );
+    }
 
     // ------------------------------------------------ dine-in table QR codes
     // /tableQrTokens/{token} maps the opaque token printed in a table's QR
@@ -116,24 +187,78 @@ service cloud.firestore {
         || isRestaurantMember(resource.data.restaurant_id);
     }
 
+    // A guest's pass (see "dine-in guests" above): only its owner reads or
+    // writes it, and it must point at the restaurant + table its token does.
+    match /dineInGuests/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow read: if isPlatformAdmin();
+      allow create, update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['token', 'restaurant_id', 'table_id', 'updated_at'])
+        && request.resource.data.token is string
+        && request.resource.data.token.matches('^[A-Za-z0-9_-]{32}$')
+        && exists(/databases/$(database)/documents/tableQrTokens/$(request.resource.data.token))
+        && get(/databases/$(database)/documents/tableQrTokens/$(request.resource.data.token)).data.restaurant_id
+          == request.resource.data.restaurant_id
+        && get(/databases/$(database)/documents/tableQrTokens/$(request.resource.data.token)).data.table_id
+          == request.resource.data.table_id;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
     // ----------------------------------------------- dine-in waiter requests
     // /waiterRequests/{id} is a guest's "Request waiter" call. Staff read every
-    // call (the console watches the whole collection, as it does orders); only
-    // platform staff or members of that restaurant may create or change one,
-    // and a call can never be moved to another restaurant, table, seating or
-    // guest. A guest may read their own call ("a waiter is on the way").
-    // Guests placing calls directly is still to do — see
-    // docs/DINE_IN_TABLES_QR_HANDOVER.md, "Known gaps".
+    // call (the console watches the whole collection, as it does orders), and
+    // a call can never be moved to another restaurant, table, seating or
+    // guest. A guest may read their own call ("a waiter is on the way"), open
+    // one for the table their pass is for, and press it again while it's
+    // unanswered — only staff accept or resolve it.
+    function isGuestWaiterCall(requestId) {
+      let r = request.resource.data;
+      let table = tableAfter(r.restaurant_id, r.table_id);
+      return isGuestAtTable(r.restaurant_id, r.table_id)
+        && r.id == requestId
+        && r.guest_id == request.auth.uid
+        && r.status == 'open'
+        && r.request_count == 1
+        && r.get('accepted_at', null) == null
+        && r.get('accepted_by', null) == null
+        && r.get('accepted_by_id', null) == null
+        && r.get('resolved_at', null) == null
+        && r.get('resolved_by', null) == null
+        && r.get('resolved_by_id', null) == null
+        && (r.get('message', null) == null || (r.message is string && r.message.size() <= 200))
+        && table.get('active', true) != false
+        && r.table_session_id == table.session.id
+        && table.session.guests[request.auth.uid].waiter_request_id == requestId;
+    }
+
+    function isGuestWaiterRecall() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return before.guest_id == request.auth.uid
+        && before.status in ['open', 'accepted']
+        && isGuestAtTable(before.restaurant_id, before.table_id)
+        && after.diff(before).affectedKeys()
+          .hasOnly(['request_count', 'last_requested_at', 'updated_at', 'message'])
+        && after.request_count == before.request_count + 1
+        && (after.get('message', null) == null
+          || (after.message is string && after.message.size() <= 200));
+    }
+
     match /waiterRequests/{requestId} {
-      allow get: if signedIn() && resource.data.guest_id == request.auth.uid;
+      // `resource == null`: a guest's app may look up a call that has since
+      // been deleted (it then starts a new one).
+      allow get: if signedIn() && (resource == null || resource.data.guest_id == request.auth.uid);
       allow read: if isPlatformAdmin() || isAnyRestaurantMember();
       allow create: if isPlatformAdmin()
-        || isRestaurantMember(request.resource.data.restaurant_id);
-      allow update: if (isPlatformAdmin() || isRestaurantMember(resource.data.restaurant_id))
-        && request.resource.data.restaurant_id == resource.data.restaurant_id
-        && request.resource.data.table_id == resource.data.table_id
-        && request.resource.data.table_session_id == resource.data.table_session_id
-        && request.resource.data.guest_id == resource.data.guest_id;
+        || isRestaurantMember(request.resource.data.restaurant_id)
+        || isGuestWaiterCall(requestId);
+      allow update: if ((isPlatformAdmin() || isRestaurantMember(resource.data.restaurant_id))
+          && request.resource.data.restaurant_id == resource.data.restaurant_id
+          && request.resource.data.table_id == resource.data.table_id
+          && request.resource.data.table_session_id == resource.data.table_session_id
+          && request.resource.data.guest_id == resource.data.guest_id)
+        || isGuestWaiterRecall();
       allow delete: if isPlatformAdmin();
     }
 
@@ -166,17 +291,74 @@ service cloud.firestore {
         || next.get('dine_in', {}).get('confirmed_at', null) != null;
     }
 
+    // A dine-in guest (see "dine-in guests" above) may read the dine-in orders
+    // at the table their pass is for, start an order there, and add items to
+    // one that's still waiting for a waiter — in multiple mode only their own.
+    // Only waiters move an order on from there.
+    function isGuestTableOrder(o) {
+      return o.get('order_type', '') == 'dine_in'
+        && o.get('dine_in', null) is map
+        && isGuestAtTable(o.restaurant_id, o.dine_in.table_id);
+    }
+
+    function isGuestOrderCreate(orderId) {
+      let o = request.resource.data;
+      let table = tableAfter(o.restaurant_id, o.dine_in.table_id);
+      return isGuestTableOrder(o)
+        && o.id == orderId
+        && o.status == 'waiting_for_waiter_confirmation'
+        && o.dine_in.guest_id == request.auth.uid
+        && o.dine_in.get('confirmed_at', null) == null
+        && o.get('payment_status', 'pending') == 'pending'
+        && o.get('driver_id', null) == null
+        && o.items is map
+        && o.items.size() > 0
+        && table.get('active', true) != false
+        && o.dine_in.table_session_id == table.session.id
+        && o.dine_in.order_mode == table.session.order_mode
+        && orderId in table.session.get('order_ids', []);
+    }
+
+    function isGuestOrderAddition() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return isGuestTableOrder(before)
+        && before.status in ['waiting_for_waiter_confirmation', 'pending']
+        && (before.dine_in.get('order_mode', 'single') != 'multiple'
+          || before.dine_in.guest_id == request.auth.uid)
+        && before.dine_in.table_session_id
+          == tableAfter(before.restaurant_id, before.dine_in.table_id).session.id
+        && after.diff(before).affectedKeys().hasOnly([
+          'items', 'timeline', 'dine_in', 'subtotal', 'service_fee', 'total',
+          'special_instructions', 'updated_at'])
+        && after.dine_in.diff(before.dine_in).affectedKeys().hasOnly(['contributors'])
+        && after.dine_in.contributors.diff(before.dine_in.contributors).affectedKeys()
+          .hasOnly([request.auth.uid])
+        && after.items.diff(before.items).changedKeys().size() == 0
+        && after.items.diff(before.items).removedKeys().size() == 0
+        && after.timeline.diff(before.timeline).changedKeys().size() == 0
+        && after.timeline.diff(before.timeline).removedKeys().size() == 0;
+    }
+
     match /orders/{orderId} {
       // A driver may only read/update an order already assigned to them
       // (never create or delete) — needed for the driver app's direct
       // "offered -> assigned -> arrived -> picked_up -> ..." status writes.
       allow read: if isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver();
-      allow update: if (isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver())
+      // `resource == null`: placing an order reads the table's current order,
+      // which staff may have deleted meanwhile (a new one is then started).
+      allow get: if (resource == null && hasLiveGuestPass())
+        || (resource != null && isGuestTableOrder(resource.data));
+      allow update: if (isPlatformAdmin() || isAnyRestaurantMember() || isOrderDriver()
+          || isGuestOrderAddition())
         && dineInConfirmedBeforeKitchen();
-      allow create: if (isPlatformAdmin() || isAnyRestaurantMember())
+      allow create: if (isPlatformAdmin() || isAnyRestaurantMember() || isGuestOrderCreate(orderId))
         && dineInConfirmedBeforeKitchen();
       allow delete: if isPlatformAdmin() || isAnyRestaurantMember();
-      match /{document=**} {
+      // Sub-collections only: `{sub}` keeps this from also matching the order
+      // itself (in rules v2 a bare `{document=**}` matches zero segments too),
+      // which would bypass the checks above.
+      match /{sub}/{document=**} {
         allow read, write: if isPlatformAdmin() || isAnyRestaurantMember()
           || (signedIn()
               && get(/databases/$(database)/documents/orders/$(orderId)).data.driver_id == request.auth.uid);

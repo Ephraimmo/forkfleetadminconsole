@@ -10,8 +10,10 @@
 > **Status:** the admin side is live. That covers table configuration, QR codes, seatings,
 > waiter requests, the Table overview, and the Dine-in orders view, where a waiter edits an order
 > (with edit history), confirms it, sends it to the kitchen and marks it served, and gets an
-> "Order Ready" alert. The **customer ordering flow is not built yet**. This doc is the contract it
-> must follow.
+> "Order Ready" alert. The Firestore rules for guests are in place (§1.6, §2). The guest side is
+> being built as a separate website, **Hearth Dine-in**, from
+> [DINE_IN_WEBSITE_LOVABLE_HANDOVER.md](DINE_IN_WEBSITE_LOVABLE_HANDOVER.md), whose data layer
+> follows this contract. Any other guest app must follow it too.
 
 ---
 
@@ -76,6 +78,7 @@ session: {
   order_mode: "single" | "multiple";  // fixed for the whole seating
   current_order_id: string | null;    // single mode: the table's most recent order
   order_count: number;
+  order_ids: string[];         // every order started in this seating, oldest first (the running bill)
   guests: {
     [guestId: string]: {
       label: string;               // "Customer 2", or the guest's name
@@ -96,6 +99,12 @@ session: {
 - Anything that writes the seating must keep every field above, including each guest's
   `waiter_request_id`. It is how a guest's repeat presses of "Request waiter" find their open
   call. The shared placement and waiter-call functions already do this.
+- `order_ids` gains an id each time an order is started in the seating, and nothing is ever
+  removed. A guest's app lists the running bill from it: the whole table's orders in single mode,
+  and the guest's own (`dine_in.guest_id`) in multiple mode. Seatings opened before the field
+  existed list only the orders started since.
+- A guest's app writes the seating back exactly as it read it, changing only that guest's seat and
+  the seating's own counters. The rules (§2) refuse any change to another guest's seat.
 
 ### 1.5 Waiter requests — `waiterRequests/{requestId}`
 
@@ -124,6 +133,26 @@ and Table overview pages.
 - **Only one waiter can accept a call.** A second waiter's accept fails and says who has it. Any
   waiter can resolve a call.
 
+### 1.6 Guest passes — `dineInGuests/{uid}`
+
+A guest's app signs the guest in (anonymous auth is enough) and, after resolving the scanned token,
+saves the guest's pass. Everything a guest may read or write is scoped to it (§2).
+
+```ts
+{
+  token: string;          // the QR token they scanned
+  restaurant_id: string;  // copied from tableQrTokens/{token}; the rules check they match
+  table_id: string;       //   … likewise
+  updated_at: string;
+}
+```
+
+- No other fields are allowed. Only the guest reads or writes their own pass.
+- A pass is live only while its token exists. **Regenerating a table's QR code deletes the old
+  token, which revokes every pass issued from it**: those guests can no longer read the table or
+  order there until they scan the new code.
+- One pass per guest. Scanning another table's code replaces it, so the guest moves tables.
+
 ---
 
 ## 2. QR codes
@@ -143,6 +172,25 @@ A table's QR code encodes exactly:
   of that restaurant may create, update or delete tokens. A token can never be re-pointed at
   another restaurant or table. Guests need a Firebase session to resolve a code; anonymous auth is
   enough.
+- **What a guest with a live pass (§1.6) may do**, and nothing more:
+  - `get` their restaurant, their table, and the dine-in orders at their table. They can never
+    `list` tables, orders or waiter requests.
+  - Update only the table's `session`. Within a seating they may change only their own seat, and
+    may not change the seating's id, opening time or mode, or drop an id from `order_ids`. A new
+    seating must hold just them, in the table's mode.
+  - Create an order at their table only as `waiting_for_waiter_confirmation`, with
+    `dine_in.guest_id` as their uid, no `confirmed_at`, `payment_status` `pending`, and at least one
+    item. It must belong to the table's current seating, in that seating's mode, and be listed in its
+    `order_ids`, all written in the same transaction.
+  - Add to an order at their table while it is waiting for confirmation (in multiple mode only
+    their own). They can only add items and timeline entries, update their own contributor entry,
+    the totals, the special instructions and `updated_at`, and never change or remove an existing
+    line.
+  - Create a waiter request for their table and seating (`open`, `request_count` 1, recorded as
+    their seat's `waiter_request_id`). They can re-press their own open or accepted call
+    (`request_count + 1`), but never accept or resolve one.
+- The Hearth Dine-in data layer was run against these rules in the Firebase emulator, both the
+  guest flows and the writes above that must be refused.
 
 ---
 
@@ -174,9 +222,10 @@ seating's bill is therefore the sum of its rounds.
 
 ## 4. Customer app: what the dine-in flow must do
 
-1. Serve `/dine-in/:token`. Read `tableQrTokens/{token}`, which is the same logic as
-   `resolveTableQrToken()`. If there is no doc, show "This code isn't valid". If `active` is
-   `false`, show "This table isn't taking orders right now".
+1. Serve `/dine-in/:token`. Sign the guest in (anonymous is fine), then read
+   `tableQrTokens/{token}`, which is the same logic as `resolveTableQrToken()`. If there is no doc,
+   show "This code isn't valid". Otherwise save the guest's pass (§1.6). If `active` is `false`,
+   show "This table isn't taking orders right now".
 2. Take `restaurant_id`, `table_id`, `table_label` and `order_mode` **only from the token doc**.
    Never take them from query parameters, form fields or anything else the guest controls.
 3. **Lock the table for the visit.** Keep the token (not a table id) and pass it to every
@@ -251,7 +300,10 @@ into `waiter_confirmed`, `accepted` or `delivered`. `setFirebaseOrderStatus()` r
 for dine-in orders, and refuses `preparing`/`ready` for an order that hasn't been sent. The
 kitchen board also checks `dine_in.confirmed_at` before it shows a dine-in order. Whichever app
 writes the order, `firestore.rules` refuses any write that puts a dine-in order in `accepted`,
-`preparing`, `ready` or `delivered` without `dine_in.confirmed_at`.
+`preparing`, `ready` or `delivered` without `dine_in.confirmed_at`. (Until 2026-09-27, the
+`orders/{orderId}/{document=**}` match also matched the order itself, because in rules v2 a
+recursive wildcard matches zero segments. Staff and drivers could skip this check through it. It
+now only matches sub-collections.)
 
 An order that is waiting or confirmed can also be `rejected`, with a reason. `cancelled` and
 `refunded` work as for any other order. The console refuses `assigned`, `picked_up` and
@@ -388,23 +440,24 @@ to the database; the alert is worked out from the live order book.
 
 ## 7. Known gaps (not built yet)
 
-- The customer ordering and waiter-call flows (§4).
-- **Firestore rules for guests.** Today only platform staff and restaurant members may write orders,
-  tables and waiter requests (guests may read their own call). When the flow lands, guests (signed
-  in, anonymous is fine) need rules that allow:
-  - creating a dine-in order whose `restaurant_id` / `dine_in.table_id` match an existing, active
-    `tableQrTokens` doc, with `dine_in.guest_id == request.auth.uid` and
-    `status == "waiting_for_waiter_confirmation"`;
-  - adding items to an order only while it is waiting for confirmation, and in multiple mode only
-    when `resource.data.dine_in.guest_id == request.auth.uid`;
-  - creating a waiter request (`status == "open"`, `guest_id == request.auth.uid`) for the table
-    the token points at, and bumping `request_count` on their own open call;
-  - updating only the `session` field of the table the token points at.
+- The guest website itself (§4), which is being built from
+  [DINE_IN_WEBSITE_LOVABLE_HANDOVER.md](DINE_IN_WEBSITE_LOVABLE_HANDOVER.md).
+- **Deploying the rules.** The guest rules (§2) and the `dineInConfirmedBeforeKitchen()` check only
+  apply once the rules are deployed (`firebase deploy --only firestore:rules`), and guests need
+  **Anonymous** sign-in switched on in Firebase Authentication. Deploying replaces the live rules,
+  so compare them first. This file lets customers read neither restaurants nor orders, and write no
+  orders, except through a dine-in guest pass, whereas the Customer app handovers expect
+  customers to do both.
+- **Guest-side limits the rules can't close:**
+  - A guest's app prices the lines, and the rules can't re-price them against the menu. The
+    waiter's confirmation is the check.
+  - The rules can't tell whether a seating has gone idle, so a guest holding the table's current
+    code could start a new seating early. Orders are unaffected; guests' running bill restarts.
+  - At a multiple-mode table, a guest can read (not change) other guests' orders there if they know
+    an order's id.
 
-  Alternatively, run `placeDineInOrder()` and `requestWaiter()` server-side (Cloud Functions) and
-  keep guests out of direct writes.
-- **Deploying the rules.** The `dineInConfirmedBeforeKitchen()` check in `firestore.rules` only
-  applies once the rules are deployed (`firebase deploy --only firestore:rules`).
+  Moving placement to a server (Cloud Functions running `placeDineInOrder()` and
+  `requestWaiter()`) would close all three.
 - **Restaurant Admin app.** If it shows dine-in orders, it must:
   - recognise `waiting_for_waiter_confirmation` and `waiter_confirmed` (neither is a kitchen
     status);

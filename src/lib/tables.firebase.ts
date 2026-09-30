@@ -109,6 +109,10 @@ export interface TableSession {
   current_order_id: string | null;
   /** Orders created in this seating so far. */
   order_count: number;
+  /** Every order started in this seating, oldest first — how a guest's app
+   *  lists the table's orders for the running bill. Seatings opened before the
+   *  field existed only list the orders started since. */
+  order_ids: string[];
   /** Everyone who has ordered, keyed by guest id. */
   guests: Record<string, TableSessionGuest>;
 }
@@ -191,6 +195,9 @@ export function normalizeTableSession(raw: unknown): TableSession | null {
     order_mode: resolveOrderMode(r["order_mode"]),
     current_order_id: strOrNull(r["current_order_id"]),
     order_count: count(r["order_count"]),
+    order_ids: Array.isArray(r["order_ids"])
+      ? (r["order_ids"] as unknown[]).filter((v): v is string => typeof v === "string" && v !== "")
+      : [],
     guests,
   };
 }

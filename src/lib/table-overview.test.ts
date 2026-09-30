@@ -24,6 +24,7 @@ function session(overrides: Partial<TableSession> = {}): TableSession {
     order_mode: "multiple",
     current_order_id: null,
     order_count: 0,
+    order_ids: [],
     guests: {},
     ...overrides,
   };

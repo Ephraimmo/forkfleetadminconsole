@@ -374,6 +374,7 @@ async function placeInTransaction(
     });
     tx.set(orderPath(order.id), w(order));
     session.order_count += 1;
+    session.order_ids = [...session.order_ids, order.id];
     seat.order_count += 1;
     if (mode === "single") session.current_order_id = order.id;
     else seat.current_order_id = order.id;
@@ -446,6 +447,7 @@ export function joinSeating(
           order_mode: table.order_mode,
           current_order_id: null,
           order_count: 0,
+          order_ids: [],
           guests: {},
         };
   const seat: TableSessionGuest = session.guests[guest.id] ?? {

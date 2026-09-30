@@ -398,6 +398,29 @@ describe("seatings", () => {
     expect(session.order_mode).toBe("single");
   });
 
+  it("lists every order started in the seating, for the guests' running bill", async () => {
+    const single = await addTable("10", "single");
+    const round1 = await place(single, 1, [item("Steak")]);
+    await place(single, 2, [item("Chips")]);
+    await confirmAndSend(round1.order_id);
+    const round2 = await place(single, 2, [item("Dessert")]);
+    expect(tableDoc(single)["session"].order_ids).toEqual([round1.order_id, round2.order_id]);
+
+    const multiple = await addTable("11", "multiple");
+    const a = await place(multiple, 1, [item("Steak")]);
+    const b = await place(multiple, 2, [item("Burger")]);
+    await place(multiple, 1, [item("Coke")]);
+    expect(tableDoc(multiple)["session"].order_ids).toEqual([a.order_id, b.order_id]);
+
+    await closeTableSession({
+      restaurant_id: RID,
+      table_id: single.id,
+      session_id: round1.session_id,
+    });
+    const next = await place(single, 3, [item("Burger")]);
+    expect(tableDoc(single)["session"].order_ids).toEqual([next.order_id]);
+  });
+
   it("clearing the table ends the seating; the next guest starts a new one", async () => {
     const table = await addTable("10", "single");
     const first = await place(table, 1, [item("Steak")]);
