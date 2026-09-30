@@ -11,11 +11,13 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
   UtensilsCrossed,
 } from "lucide-react";
 
 import { PermissionGate } from "@/components/permission-gate";
+import { DemoMenuDialog } from "@/components/menus/demo-menu-dialog";
 import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -83,6 +85,7 @@ import {
   type MenuPayload,
   type ModifierChoiceConfig,
 } from "@/lib/menus.firebase";
+import { demoMenuFor } from "@/lib/demo-menus";
 import { isFirebaseAvailable } from "@/lib/firestore";
 
 export const Route = createFileRoute("/_authenticated/menus")({
@@ -204,6 +207,7 @@ function MenusPage() {
   const [productSearch, setProductSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [addProductOpen, setAddProductOpen] = useState(false);
+  const [demoMenuOpen, setDemoMenuOpen] = useState(false);
   const [newProductCategoryId, setNewProductCategoryId] = useState("");
   const [newModifierType, setNewModifierType] = useState<"option" | "extra">("option");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
@@ -461,6 +465,7 @@ function MenusPage() {
         }
 
         const availableCount = items.filter((i) => i.is_available).length;
+        const hasDemoMenu = canManage && demoMenuFor(restaurantId) !== null;
 
         const handleConfirmDelete = () => {
           if (!pendingDelete) return;
@@ -1009,6 +1014,16 @@ function MenusPage() {
                   </TabsTrigger>
                 </TabsList>
 
+                {hasDemoMenu && (
+                  <Button
+                    variant="outline"
+                    className="gap-2 sm:ml-auto"
+                    onClick={() => setDemoMenuOpen(true)}
+                  >
+                    <Sparkles className="size-4" />
+                    Demo menu
+                  </Button>
+                )}
                 {canManage && (
                   <Dialog open={addProductOpen} onOpenChange={setAddProductOpen}>
                     <DialogTrigger asChild>
@@ -1231,18 +1246,33 @@ function MenusPage() {
                         <p className="text-sm font-medium">No products yet</p>
                         <p className="mt-1 max-w-sm text-xs text-muted-foreground">
                           {canManage
-                            ? "Click \"Add product\" to create your first menu item."
+                            ? hasDemoMenu
+                              ? 'Click "Add product" to create your first menu item, or start from the ready-made demo menu.'
+                              : 'Click "Add product" to create your first menu item.'
                             : "This restaurant has no menu items yet."}
                         </p>
                         {canManage && (
-                          <Button
-                            className="mt-4 gap-2"
-                            size="sm"
-                            onClick={() => setAddProductOpen(true)}
-                          >
-                            <Plus className="size-4" />
-                            Add your first product
-                          </Button>
+                          <div className="mt-4 flex flex-wrap justify-center gap-2">
+                            <Button
+                              className="gap-2"
+                              size="sm"
+                              onClick={() => setAddProductOpen(true)}
+                            >
+                              <Plus className="size-4" />
+                              Add your first product
+                            </Button>
+                            {hasDemoMenu && (
+                              <Button
+                                className="gap-2"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setDemoMenuOpen(true)}
+                              >
+                                <Sparkles className="size-4" />
+                                Load demo menu
+                              </Button>
+                            )}
+                          </div>
                         )}
                       </div>
                     ) : filteredItems.length === 0 ? (
@@ -1527,6 +1557,16 @@ function MenusPage() {
                 </div>
               </TabsContent>
             </Tabs>
+
+            {hasDemoMenu && (
+              <DemoMenuDialog
+                restaurantId={restaurantId}
+                menu={menuQuery.data}
+                open={demoMenuOpen}
+                onOpenChange={setDemoMenuOpen}
+                onChanged={() => void invalidate()}
+              />
+            )}
 
             <AlertDialog
               open={!!pendingDelete}

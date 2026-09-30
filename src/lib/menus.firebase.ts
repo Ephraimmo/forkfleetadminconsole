@@ -110,7 +110,7 @@ export interface MenuPayload {
   modifiers: MenuModifier[];
 }
 
-type MenuKind = "categories" | "items" | "variants" | "addons" | "modifiers";
+export type MenuKind = "categories" | "items" | "variants" | "addons" | "modifiers";
 type RawMap = Record<string, unknown>;
 
 const EMPTY: MenuPayload = {
@@ -127,6 +127,50 @@ function uid(prefix: string): string {
 
 function base(restaurantId: string, kind: MenuKind): string {
   return `menus/${restaurantId}/${kind}`;
+}
+
+/** Where one kind of menu record lives, e.g. menus/{restaurantId}/items. */
+export function menuCollectionPath(restaurantId: string, kind: MenuKind): string {
+  return base(restaurantId, kind);
+}
+
+// The stored form of each record: the record plus the camelCase aliases the
+// customer and restaurant apps read.
+
+export function menuItemDocument(record: MenuItem): FirestoreValue {
+  return {
+    ...record,
+    modifierIds: record.modifier_ids,
+    modifierConfig: record.modifier_config,
+  } as unknown as FirestoreValue;
+}
+
+export function menuVariantDocument(record: MenuVariant): FirestoreValue {
+  return {
+    ...record,
+    menuItemId: record.menu_item_id,
+    priceDelta: record.price_delta,
+    isDefault: record.is_default,
+    isAvailable: record.is_available,
+  };
+}
+
+export function menuAddonDocument(record: MenuAddon): FirestoreValue {
+  return {
+    ...record,
+    menuItemId: record.menu_item_id,
+    maxQuantity: record.max_quantity,
+    isAvailable: record.is_available,
+  };
+}
+
+export function menuModifierDocument(record: MenuModifier): FirestoreValue {
+  return {
+    ...record,
+    includePricing: record.include_pricing,
+    minSelections: record.min_selections,
+    maxSelections: record.max_selections,
+  } as unknown as FirestoreValue;
 }
 
 function readMenuItemId(raw: RawMap): string {
@@ -442,11 +486,7 @@ export async function saveFirebaseMenuItem(
     modifier_config: modifierConfig,
   };
   // Write snake_case + camelCase aliases for cross-app compatibility.
-  await fsSet(`${base(input.restaurant_id, "items")}/${id}`, {
-    ...record,
-    modifierIds: modifierIds,
-    modifierConfig: modifierConfig,
-  } as unknown as FirestoreValue);
+  await fsSet(`${base(input.restaurant_id, "items")}/${id}`, menuItemDocument(record));
   return { id };
 }
 
@@ -504,13 +544,7 @@ export async function saveFirebaseVariant(
       existing?.sort_order ??
       Object.values(all).filter((v) => v.menu_item_id === input.menu_item_id).length,
   };
-  await fsSet(`${base(input.restaurant_id, "variants")}/${id}`, {
-    ...record,
-    menuItemId: record.menu_item_id,
-    priceDelta: record.price_delta,
-    isDefault: record.is_default,
-    isAvailable: record.is_available,
-  });
+  await fsSet(`${base(input.restaurant_id, "variants")}/${id}`, menuVariantDocument(record));
   return { id };
 }
 
@@ -535,12 +569,7 @@ export async function saveFirebaseAddon(
     max_quantity: input.max_quantity ?? existing?.max_quantity ?? 3,
     is_available: input.is_available ?? existing?.is_available ?? true,
   };
-  await fsSet(`${base(input.restaurant_id, "addons")}/${id}`, {
-    ...record,
-    menuItemId: record.menu_item_id,
-    maxQuantity: record.max_quantity,
-    isAvailable: record.is_available,
-  });
+  await fsSet(`${base(input.restaurant_id, "addons")}/${id}`, menuAddonDocument(record));
   return { id };
 }
 
@@ -582,12 +611,7 @@ export async function saveFirebaseModifier(
     sort_order: input.sort_order ?? existing?.sort_order ?? Object.keys(all).length,
     is_available: input.is_available ?? existing?.is_available ?? true,
   };
-  await fsSet(`${base(input.restaurant_id, "modifiers")}/${id}`, {
-    ...record,
-    includePricing: record.include_pricing,
-    minSelections: record.min_selections,
-    maxSelections: record.max_selections,
-  } as unknown as FirestoreValue);
+  await fsSet(`${base(input.restaurant_id, "modifiers")}/${id}`, menuModifierDocument(record));
   return { id };
 }
 
